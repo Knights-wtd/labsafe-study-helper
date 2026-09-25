@@ -73,25 +73,30 @@
   function questionContainers(document, view) {
     const groups = Array.from(document?.querySelectorAll?.('.ivu-radio-group, .ivu-checkbox-group') || []).filter((group) => visible(group, view));
     const output = [];
-    for (const group of groups) {
-      const labels = Array.from(group.querySelectorAll?.('.ivu-radio-wrapper, .ivu-checkbox-wrapper, label') || [])
-        .filter((label) => visible(label, view) && /^[A-Z]\s*[.．、,，]/i.test(buttonText(label)));
-      if (labels.length < 2) continue;
-      let container = group.parentElement;
+    const seen = new Set();
+    const wrappers = Array.from(document?.querySelectorAll?.('.ivu-radio-wrapper, .ivu-checkbox-wrapper') || [])
+      .filter((label) => visible(label, view) && /^[A-Z]\s*[.．、,，]/i.test(buttonText(label)));
+    for (const seed of [...groups, ...wrappers]) {
+      let container = seed.parentElement;
+      let labels = [];
       while (container && container !== document.body) {
         const text = clean(container.innerText ?? container.textContent);
-        const count = container.querySelectorAll?.('.ivu-radio-group, .ivu-checkbox-group')?.length;
-        if (count === 1 && /(?:单选题|多选题|判断题)/.test(text) && /^\s*\d+[.．、]/.test(text)) break;
+        const count = container.querySelectorAll?.('.ivu-radio-group, .ivu-checkbox-group')?.length ?? 0;
+        labels = Array.from(container.querySelectorAll?.('.ivu-radio-wrapper, .ivu-checkbox-wrapper, label') || [])
+          .filter((label) => visible(label, view) && /^[A-Z]\s*[.．、,，]/i.test(buttonText(label)));
+        if (count <= 1 && labels.length >= 2 && labels.length <= 8 &&
+          /^(?:\d+[.．、]\s*)?(?:单选题|多选题|判断题)\s*/.test(text)) break;
         container = container.parentElement;
       }
-      if (!container || container === document.body) continue;
+      if (!container || container === document.body || seen.has(container)) continue;
       const whole = clean(container.innerText ?? container.textContent);
       const optionStart = whole.search(/\bA\s*[.．、,，]/i);
       if (optionStart < 0) continue;
       const heading = whole.slice(0, optionStart);
       const question = parseQuestionText(heading, labels, whole);
       if (!question) continue;
-      output.push({ ...question, container, group, labels });
+      seen.add(container);
+      output.push({ ...question, container, group: groups.includes(seed) ? seed : null, labels });
     }
     return output;
   }
@@ -102,7 +107,7 @@
     const selected = question.kind === 'multiple' ? answer : answer.slice(0, 1);
     const controls = selected.map((letter) => {
       const label = question.labels.find((node) => new RegExp(`^${letter}\\s*[.．、,，]`).test(buttonText(node)));
-      return label?.querySelector?.('input') || label;
+      return label;
     });
     if (controls.some((control) => !control || !visible(control, view))) return null;
     if (question.kind === 'multiple') {

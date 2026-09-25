@@ -59,7 +59,7 @@ test('multiple choice uses the question-local submit control after selecting kno
   const submit = { textContent: '提交答案', querySelectorAll: () => [], getAttribute: () => null };
   const container = { querySelectorAll: () => [submit] };
   const action = quiz.questionAction({ kind: 'multiple', correct: null, options: { A: '20℃', C: '30℃' }, labels, container }, { correct: ['C'] });
-  assert.deepEqual(action.controls, [inputC]);
+  assert.deepEqual(action.controls, [labels[1]]);
   assert.equal(action.submit, submit);
 });
 
@@ -73,7 +73,7 @@ test('practice controller submits a multiple choice question once and records re
   const submit = { click: () => { submitted += 1; }, textContent: '提交答案', querySelectorAll: () => [], getAttribute: () => null };
   const question = {
     kind: 'multiple', stem: '虚构多选题（）', options: { A: '选项甲', B: '选项乙' }, correct: null,
-    labels: [{ textContent: 'A、选项甲', querySelector: () => choice }],
+    labels: [{ textContent: 'A、选项甲', querySelector: () => choice, click: () => { selected += 1; } }],
     container: { querySelectorAll: () => [submit] },
   };
   quiz.questionContainers = () => [question];
@@ -138,4 +138,65 @@ test('practice exit is bounded when the page never changes', async () => {
     quiz.exactControls = originalControls;
     globalThis.chrome = originalChrome;
   }
+});
+
+test('question list marker may be CSS-generated and absent from DOM text', () => {
+  const labels = [
+    { textContent: 'A、20℃', parentElement: null },
+    { textContent: 'B、10℃', parentElement: null },
+  ];
+  const body = {};
+  const container = {
+    innerText: '多选题 贮存易燃易爆物质的温度是（） A、20℃ B、10℃ 提交答案',
+    parentElement: body,
+    querySelectorAll: (selector) => selector.includes('wrapper') ? labels : [group],
+  };
+  const group = { parentElement: container, querySelectorAll: () => labels };
+  const document = { body, querySelectorAll: () => [group] };
+  const parsed = quiz.questionContainers(document);
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].kind, 'multiple');
+  assert.equal(parsed[0].stem, '贮存易燃易爆物质的温度是（）');
+});
+
+test('option label remains actionable when its native input has no visible box', () => {
+  const input = { getBoundingClientRect: () => ({ width: 0, height: 0 }) };
+  const label = { textContent: 'A、20℃', querySelector: () => input };
+  const action = quiz.questionAction({ kind: 'single', correct: null, options: { A: '20℃', B: '10℃' }, labels: [label] }, null);
+  assert.deepEqual(action.controls, [label]);
+});
+
+test('multiple choice wrappers are found even without a checkbox group element', () => {
+  const body = {};
+  const labels = [
+    { textContent: 'A、20℃' },
+    { textContent: 'B、10℃' },
+  ];
+  const container = {
+    innerText: '多选题 最高温度不能高于（） A、20℃ B、10℃ 提交答案',
+    parentElement: body,
+    querySelectorAll: (selector) => selector.includes('wrapper') ? labels : [],
+  };
+  for (const label of labels) label.parentElement = container;
+  const document = {
+    body,
+    querySelectorAll: (selector) => selector === '.ivu-radio-wrapper, .ivu-checkbox-wrapper' ? labels : [],
+  };
+  assert.equal(quiz.questionContainers(document).length, 1);
+});
+
+test('diagnosis reports practice structure and attention without copying question text', () => {
+  const href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/questionBank/exercises/23';
+  const wrapper = { textContent: 'A、敏感题干' };
+  const document = {
+    body: { innerText: '敏感题干' }, documentElement: {},
+    querySelectorAll: (selector) => selector === '.ivu-radio-wrapper, .ivu-checkbox-wrapper' ? [wrapper] : [],
+  };
+  const controller = new StudyController({ document, window: { location: { href } } });
+  controller.state = 'needsAttention';
+  controller.reason = '练习题目结构无法识别。';
+  const diagnosis = controller.diagnose();
+  assert.equal(diagnosis.practice.wrapperCount, 1);
+  assert.equal(diagnosis.reason, '练习题目结构无法识别。');
+  assert.equal(JSON.stringify(diagnosis).includes('敏感题干'), false);
 });

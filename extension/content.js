@@ -2020,9 +2020,19 @@
       const controls = this.document?.querySelectorAll
         ? Array.from(this.document.querySelectorAll('button, a, [role="button"]'))
         : [];
+      let practice = null;
+      if (Quiz?.isPracticeUrl(this.window?.location?.href)) {
+        const groupCount = this.document.querySelectorAll?.('.ivu-radio-group, .ivu-checkbox-group')?.length ?? 0;
+        const wrapperCount = this.document.querySelectorAll?.('.ivu-radio-wrapper, .ivu-checkbox-wrapper')?.length ?? 0;
+        let parsedCount = null;
+        try { parsedCount = Quiz.questionContainers(this.document, this.window).length; } catch { /* 仅报告结构计数 */ }
+        practice = { groupCount, wrapperCount, parsedCount };
+      }
       return {
         state: this.state,
         rate: this.rate,
+        ...(this.reason ? { reason: this.reason } : {}),
+        ...(practice ? { practice } : {}),
         videoCount: videos.length,
         visibleVideoCount: videos.filter((video) => isVisible(video, this.window)).length,
         frameCount: frames.length,

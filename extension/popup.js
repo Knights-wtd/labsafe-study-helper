@@ -92,7 +92,11 @@
     } catch {
       throw new Error('学习助手尚未注入此页面。请点击“开始学习”或“导出诊断”后重试。');
     }
-    if (!response?.ok) throw new Error('页面未能处理此操作。');
+    if (!response?.ok) {
+      const failure = new Error(response?.status?.reason || '页面未能处理此操作。');
+      failure.status = response?.status;
+      throw failure;
+    }
     return response;
   }
 
@@ -127,6 +131,7 @@
       if (result?.status) showStatus(result.status);
       return result;
     } catch (error) {
+      if (error?.status) showStatus(error.status);
       showError(error?.message || '操作失败，请重试。');
       return null;
     } finally {
@@ -142,7 +147,7 @@
       return;
     }
     await runWithTab({ allowed: true }, async (tab) => {
-      await startOnTab(tab, rate);
+      return startOnTab(tab, rate);
     });
   }
 
@@ -163,7 +168,7 @@
       });
       return response;
     } catch (error) {
-      await sendFlow('FLOW_STOP', { tabId: tab.id }).catch(() => {});
+      if (error?.status?.state !== 'needsAttention') await sendFlow('FLOW_STOP', { tabId: tab.id }).catch(() => {});
       throw error;
     }
   }
