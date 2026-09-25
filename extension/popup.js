@@ -4,11 +4,12 @@
   const ALLOWED_HOST = 'labsafe.lzjtu.edu.cn';
   const ALLOWED_PATH = '/lab-study-front/';
   const RATE_KEY = 'studyRate';
-  const buttonIds = ['start', 'pause', 'resume', 'stop', 'export', 'exportQuiz'];
+  const buttonIds = ['start', 'pause', 'resume', 'stop', 'export', 'exportQuiz', 'clearPracticeProgress'];
   const rateInput = document.getElementById('rate');
   const statusOutput = document.getElementById('status');
   const errorOutput = document.getElementById('error');
   const feedback = document.querySelector('.feedback');
+  const practiceProgress = document.getElementById('practiceProgress');
   const buttons = buttonIds.map((id) => document.getElementById(id));
   let actionVersion = 0;
 
@@ -60,6 +61,19 @@
   function clearError() {
     errorOutput.textContent = '';
     errorOutput.hidden = true;
+  }
+
+  async function refreshPracticeProgress() {
+    const saved = await chrome.storage.local.get(['labsafePracticeBanksV1', 'labsafePracticeBankNamesV1']);
+    const visited = Array.isArray(saved.labsafePracticeBanksV1) ? saved.labsafePracticeBanksV1 : [];
+    const names = Array.isArray(saved.labsafePracticeBankNamesV1) ? saved.labsafePracticeBankNamesV1 : [];
+    if (!names.length) {
+      practiceProgress.textContent = '本轮题库：尚未开始';
+      return;
+    }
+    const completed = names.filter((name) => visited.includes(name));
+    const next = names.find((name) => !visited.includes(name));
+    practiceProgress.textContent = `本轮题库：${completed.length}/${names.length}；${next ? `下一库：${next}` : '已遍历全部题库'}`;
   }
 
   function setBusy(busy) {
@@ -153,12 +167,12 @@
 
   async function startOnTab(tab, rate) {
     try {
-      await chrome.storage.local.set({ [RATE_KEY]: rate, labsafePracticeBanksV1: [],
-        labsafePracticeBankNamesV1: [], labsafeActivePracticeBankV1: '' });
+      await chrome.storage.local.set({ [RATE_KEY]: rate });
     } catch {
       throw new Error('无法保存倍速设置。');
     }
     const flow = await sendFlow('FLOW_START', { tabId: tab.id, rate });
+    await refreshPracticeProgress().catch(() => { practiceProgress.textContent = '本轮题库进度暂不可用'; });
     try {
       await inject(tab.id);
       const response = await sendToTab(tab.id, 'AUTO_CONTINUE', {
@@ -310,6 +324,15 @@
   }));
   document.getElementById('export').addEventListener('click', exportDiagnosis);
   document.getElementById('exportQuiz').addEventListener('click', exportQuiz);
+  document.getElementById('clearPracticeProgress').addEventListener('click', () => runWithTab({}, async (tab) => {
+    await sendFlow('FLOW_STOP', { tabId: tab.id });
+    await chrome.storage.local.set({ labsafePracticeBanksV1: [],
+      labsafePracticeBankNamesV1: [], labsafeActivePracticeBankV1: '' });
+    await refreshPracticeProgress().catch(() => { practiceProgress.textContent = '本轮题库进度暂不可用'; });
+    statusOutput.textContent = '本轮题库进度已清除';
+    feedback.dataset.state = 'stopped';
+    return null;
+  }));
 
   rateInput.addEventListener('change', async () => {
     clearError();
@@ -340,6 +363,7 @@
     const rate = validateRate(stored[RATE_KEY]);
     rateInput.value = String(rate ?? 1);
   }).catch(() => showError('无法读取已保存的倍速设置。'));
+  refreshPracticeProgress().catch(() => { practiceProgress.textContent = '本轮题库进度暂不可用'; });
   refreshStatus();
   autoStartFromUrl();
 })();
