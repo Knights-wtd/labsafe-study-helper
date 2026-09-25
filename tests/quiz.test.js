@@ -13,6 +13,7 @@ test('single and multiple answer feedback is parsed without confusing my answer'
   assert.deepEqual(quiz.parseAnswer('正确答案：B 我的答案：A'), ['B']);
   assert.deepEqual(quiz.parseAnswer('正确答案：C 我的答案：A,B'), ['C']);
   assert.deepEqual(quiz.parseAnswer('正确答案：A、C、D 我的答案：B'), ['A', 'C', 'D']);
+  assert.deepEqual(quiz.parseAnswer('正确答案：ABC 我的答案：C'), ['A', 'B', 'C']);
   assert.equal(quiz.parseAnswer('我的答案：A,B'), null);
   assert.deepEqual(quiz.parseAnswer('正确答案：对 我的答案：对'), ['对']);
   assert.deepEqual(quiz.parseAnswer('正确答案：错 我的答案：对'), ['错']);
@@ -81,11 +82,12 @@ test('practice controller submits a multiple choice question once and records re
   const storage = {};
   let selected = 0;
   let submitted = 0;
-  const choice = { click: () => { selected += 1; } };
+  const choice = { checked: false };
   const submit = { click: () => { submitted += 1; }, textContent: '提交答案', querySelectorAll: () => [], getAttribute: () => null };
   const question = {
     kind: 'multiple', stem: '虚构多选题（）', options: { A: '选项甲', B: '选项乙' }, correct: null,
-    labels: [{ textContent: 'A、选项甲', querySelector: () => choice, click: () => { selected += 1; } }],
+    labels: [{ textContent: 'A、选项甲', querySelector: () => choice, click: () => { selected += 1; choice.checked = true; } },
+      { textContent: 'B、选项乙', querySelector: () => ({ checked: false }), click: () => {} }],
     container: { querySelectorAll: () => selected ? [submit] : [] },
   };
   quiz.questionContainers = () => [question];
@@ -116,6 +118,86 @@ test('practice controller submits a multiple choice question once and records re
     assert.deepEqual(saved[0].correct, ['B']);
   } finally {
     quiz.questionContainers = originalReader;
+    globalThis.chrome = originalChrome;
+  }
+});
+
+test('known multiple answer selects every checkbox before submitting after page rerenders', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalReader = quiz.questionContainers;
+  const originalControls = quiz.exactControls;
+  const href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/questionBank/exercises/34';
+  const stem = '已收录的多选题';
+  const key = quiz.questionKey('34', stem);
+  const storage = { [quiz.STORAGE_KEY]: { [key]: { correct: ['A', 'B', 'C'] } } };
+  let selected = new Set();
+  let submitted = null;
+  quiz.questionContainers = () => {
+    const snapshot = new Set(selected);
+    const labels = ['A', 'B', 'C', 'D'].map((letter) => ({
+      textContent: `${letter}、选项${letter}`,
+      querySelector: () => ({ checked: snapshot.has(letter) }),
+      click: () => {
+        selected = new Set(snapshot);
+        selected.has(letter) ? selected.delete(letter) : selected.add(letter);
+      },
+    }));
+    return [{ kind: 'multiple', stem, options: { A: '选项A', B: '选项B', C: '选项C', D: '选项D' },
+      correct: null, labels, container: {} }];
+  };
+  quiz.exactControls = (_root, label) => label === '提交答案' && selected.size
+    ? [{ click: () => { submitted = [...selected].sort(); } }] : [];
+  globalThis.chrome = { storage: { local: {
+    get: async (keys) => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map((item) => [item, storage[item]])),
+    set: async (values) => Object.assign(storage, values),
+  } } };
+  const controller = new StudyController({ document: { querySelectorAll: () => [], documentElement: {} },
+    window: { location: { href }, setTimeout: () => 1, clearTimeout: () => {} } });
+  controller.autoFlow = true;
+  controller.state = 'running';
+  try {
+    for (let index = 0; index < 8 && !submitted && controller.state === 'running'; index += 1) {
+      await controller._continuePractice();
+    }
+    assert.deepEqual(submitted, ['A', 'B', 'C']);
+    assert.equal(controller.state, 'running');
+  } finally {
+    quiz.questionContainers = originalReader;
+    quiz.exactControls = originalControls;
+    globalThis.chrome = originalChrome;
+  }
+});
+
+test('already selected multiple answer waits for its submit control to render', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalReader = quiz.questionContainers;
+  const originalControls = quiz.exactControls;
+  let submitReady = false;
+  let submitted = 0;
+  const question = { kind: 'multiple', stem: '预选中的多选题', options: { A: '甲', B: '乙' }, correct: null,
+    labels: [
+      { textContent: 'A、甲', querySelector: () => ({ checked: true }), click: () => {} },
+      { textContent: 'B、乙', querySelector: () => ({ checked: false }), click: () => {} },
+    ], container: {} };
+  quiz.questionContainers = () => [question];
+  quiz.exactControls = (_root, label) => label === '提交答案' && submitReady
+    ? [{ click: () => { submitted += 1; } }] : [];
+  globalThis.chrome = { storage: { local: { get: async () => ({}), set: async () => {} } } };
+  const href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/questionBank/exercises/34';
+  const controller = new StudyController({ document: { querySelectorAll: () => [], documentElement: {} },
+    window: { location: { href }, setTimeout: () => 1, clearTimeout: () => {} } });
+  controller.autoFlow = true;
+  controller.state = 'running';
+  try {
+    await controller._continuePractice();
+    assert.equal(controller.state, 'running');
+    assert.equal(submitted, 0);
+    submitReady = true;
+    await controller._continuePractice();
+    assert.equal(submitted, 1);
+  } finally {
+    quiz.questionContainers = originalReader;
+    quiz.exactControls = originalControls;
     globalThis.chrome = originalChrome;
   }
 });

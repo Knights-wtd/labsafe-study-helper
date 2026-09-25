@@ -574,6 +574,7 @@
       this.practicePendingSince = 0;
       this.practicePendingStage = null;
       this.practiceSelectRetries = 0;
+      this.practiceLastSelectionLabel = null;
       this.practiceBankPendingName = null;
       this.practiceBankPendingSince = 0;
       this.practiceClosingModalSince = 0;
@@ -953,6 +954,7 @@
           this.practiceExitSignature = null;
           this.practiceExitRetries = 0;
           this.practicePendingQuestion = null;
+          this.practiceLastSelectionLabel = null;
         }
         this._stopProgressMonitor();
         this._detachVideo();
@@ -1131,6 +1133,8 @@
             if (this.practicePendingQuestion === key) {
               this.practicePendingQuestion = null;
               this.practicePendingStage = null;
+              this.practiceLastSelectionLabel = null;
+              this.practiceSelectRetries = 0;
             }
             const previous = records[key];
             if (!previous || JSON.stringify(previous.correct) !== JSON.stringify(question.correct)) {
@@ -1142,26 +1146,7 @@
           }
           if (this.practicePendingQuestion === key) {
             if (question.kind === 'multiple' && this.practicePendingStage === 'selected') {
-              const submits = Quiz.exactControls(question.container, '提交答案', this.window);
-              if (submits.length > 1) return this._setAttention('当前多选题有多个“提交答案”控件，已停止避免误点。');
-              if (submits.length === 1) {
-                submits[0].click();
-                this.practicePendingStage = 'submitted';
-                this.practicePendingSince = Date.now();
-                this._markStep('practice-submitted');
-                return this._schedulePractice(1200);
-              }
-              if (Date.now() - this.practicePendingSince >= 2500 && this.practiceSelectRetries < 2) {
-                const action = Quiz.questionAction(question, records[key], this.window);
-                const unchecked = action?.controls.filter((control) => Quiz.choiceState(control) === false) || [];
-                if (unchecked.length) {
-                  for (const control of unchecked) control.click();
-                  this.practiceSelectRetries += 1;
-                  this.practicePendingSince = Date.now();
-                  this._markStep('practice-select-retry');
-                  return this._schedulePractice(1200);
-                }
-              }
+              return this._advanceMultipleQuestion(question, key, records[key]);
             }
             if (Date.now() - this.practicePendingSince > 15000) return this._setAttention('作答后长时间未显示正确答案，已停止避免重复提交。');
             return this._schedulePractice(1000);
@@ -1169,6 +1154,7 @@
           const action = Quiz.questionAction(question, records[key], this.window);
           if (!action) return this._setAttention('练习题的选项无法唯一确认。');
           if (this.state !== 'running') return this.status();
+          if (question.kind === 'multiple') return this._advanceMultipleQuestion(question, key, records[key]);
           this.practicePendingQuestion = key;
           this.practicePendingSince = Date.now();
           this.practicePendingStage = action.type === 'select' ? 'selected' : 'submitted';
@@ -1216,6 +1202,51 @@
       } finally {
         this.practiceBusy = false;
       }
+    }
+
+    _advanceMultipleQuestion(question, key, known) {
+      const action = Quiz.questionAction(question, known, this.window);
+      if (!action || action.type !== 'select') return this._setAttention('练习题的多选选项无法唯一确认。');
+      if (this.practicePendingQuestion !== key) {
+        this.practicePendingQuestion = key;
+        this.practicePendingStage = 'selected';
+        this.practicePendingSince = Date.now();
+        this.practiceLastSelectionLabel = null;
+        this.practiceSelectRetries = 0;
+      }
+      const desired = new Set(action.controls);
+      let toggle = null;
+      for (const control of question.labels || []) {
+        const checked = Quiz.choiceState(control);
+        if (checked === null) return this._setAttention('无法确认多选题选项是否勾选，已停止避免错误提交。');
+        if (checked !== desired.has(control) && !toggle) toggle = control;
+      }
+      if (toggle) {
+        const label = Quiz.clean(toggle.textContent);
+        this.practiceSelectRetries = this.practiceLastSelectionLabel === label ? this.practiceSelectRetries + 1 : 0;
+        if (this.practiceSelectRetries >= 3) return this._setAttention('多选题勾选多次未生效，已停止避免错误提交。');
+        this.practiceLastSelectionLabel = label;
+        this.practicePendingQuestion = key;
+        this.practicePendingStage = 'selected';
+        this.practicePendingSince = Date.now();
+        toggle.click();
+        this._markStep('practice-select-one');
+        return this._schedulePractice(1200);
+      }
+      this.practiceLastSelectionLabel = null;
+      this.practiceSelectRetries = 0;
+      const submits = Quiz.exactControls(question.container, '提交答案', this.window);
+      if (submits.length > 1) return this._setAttention('当前多选题有多个“提交答案”控件，已停止避免误点。');
+      if (submits.length === 0) {
+        if (Date.now() - this.practicePendingSince > 15000) return this._setAttention('多选题已勾选，但提交答案按钮长时间未出现。');
+        return this._schedulePractice(1000);
+      }
+      submits[0].click();
+      this.practicePendingQuestion = key;
+      this.practicePendingStage = 'submitted';
+      this.practicePendingSince = Date.now();
+      this._markStep('practice-submitted');
+      return this._schedulePractice(1200);
     }
 
     _scheduleRouteRetry() {
