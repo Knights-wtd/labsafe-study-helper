@@ -127,6 +127,164 @@ test('bank card controls remain associated with their own bank title', () => {
   assert.deepEqual(quiz.bankCards(document).map((item) => item.name), ['化学安全题库', '消防安全题库']);
 });
 
+test('opening a bank does not mark it complete before its last page is recorded', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalCards = quiz.bankCards;
+  const storage = {};
+  let opened = 0;
+  quiz.bankCards = () => [
+    { name: '化学安全题库', control: { click: () => { opened += 1; } } },
+    { name: '消防安全题库', control: { click: () => {} } },
+  ];
+  globalThis.chrome = { storage: { local: {
+    get: async (keys) => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map((key) => [key, storage[key]])),
+    set: async (values) => Object.assign(storage, values),
+  } } };
+  const href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/questionBank';
+  const controller = new StudyController({ document: { querySelectorAll: () => [], documentElement: {} },
+    window: { location: { href }, setTimeout: () => 1, clearTimeout: () => {} } });
+  controller.autoFlow = true;
+  controller.state = 'running';
+  try {
+    await controller._continuePracticeBank();
+    assert.equal(opened, 1);
+    assert.deepEqual(storage[quiz.BANK_KEY] || [], []);
+    assert.deepEqual(storage[quiz.BANK_LIST_KEY], ['化学安全题库', '消防安全题库']);
+    assert.equal(storage.labsafeActivePracticeBankV1, '化学安全题库');
+  } finally {
+    quiz.bankCards = originalCards;
+    globalThis.chrome = originalChrome;
+  }
+});
+
+test('returning to bank cards opens the next unfinished bank and preserves completed names', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalCards = quiz.bankCards;
+  const storage = { [quiz.BANK_KEY]: ['化学安全题库'] };
+  let firstClicks = 0;
+  let secondClicks = 0;
+  quiz.bankCards = () => [
+    { name: '化学安全题库', control: { click: () => { firstClicks += 1; } } },
+    { name: '消防安全题库', control: { click: () => { secondClicks += 1; } } },
+  ];
+  globalThis.chrome = { storage: { local: {
+    get: async (keys) => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map((key) => [key, storage[key]])),
+    set: async (values) => Object.assign(storage, values),
+  } } };
+  const href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/questionBank';
+  const controller = new StudyController({ document: { querySelectorAll: () => [], documentElement: {} },
+    window: { location: { href }, setTimeout: () => 1, clearTimeout: () => {} } });
+  controller.autoFlow = true;
+  controller.state = 'running';
+  try {
+    await controller._continuePracticeBank();
+    assert.equal(firstClicks, 0);
+    assert.equal(secondClicks, 1);
+    assert.deepEqual(storage[quiz.BANK_KEY], ['化学安全题库']);
+    assert.equal(storage.labsafeActivePracticeBankV1, '消防安全题库');
+  } finally {
+    quiz.bankCards = originalCards;
+    globalThis.chrome = originalChrome;
+  }
+});
+
+test('bank picker modal advances to the next bank and keeps the completed set', async () => {
+  const originalChrome = globalThis.chrome;
+  const storage = { [quiz.BANK_KEY]: ['化学安全题库'] };
+  let firstClicks = 0;
+  let secondClicks = 0;
+  const candidates = [
+    { innerText: '1.化学安全题库', click: () => { firstClicks += 1; } },
+    { innerText: '2.消防安全题库', click: () => { secondClicks += 1; } },
+  ];
+  globalThis.chrome = { storage: { local: {
+    get: async (keys) => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map((key) => [key, storage[key]])),
+    set: async (values) => Object.assign(storage, values),
+  } } };
+  const href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/examTask/75';
+  const controller = new StudyController({ document: { querySelectorAll: () => [], documentElement: {} },
+    window: { location: { href }, setTimeout: () => 1, clearTimeout: () => {} } });
+  controller._hasPracticeBankModal = () => true;
+  controller._practiceBankCandidates = () => candidates;
+  controller.autoFlow = true;
+  controller.state = 'running';
+  try {
+    await controller._continuePracticeBank();
+    assert.equal(firstClicks, 0);
+    assert.equal(secondClicks, 1);
+    assert.deepEqual(storage[quiz.BANK_KEY], ['化学安全题库']);
+    assert.deepEqual(storage[quiz.BANK_LIST_KEY], ['化学安全题库', '消防安全题库']);
+  } finally {
+    globalThis.chrome = originalChrome;
+  }
+});
+
+test('unchanged next page at the end exits to select another bank', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalReader = quiz.questionContainers;
+  const originalControls = quiz.exactControls;
+  const storage = { [quiz.BANK_KEY]: [], [quiz.BANK_LIST_KEY]: ['化学安全题库', '消防安全题库'],
+    labsafeActivePracticeBankV1: '化学安全题库' };
+  let nextClicks = 0;
+  let exitClicks = 0;
+  quiz.questionContainers = () => [{ kind: 'judgment', stem: '最后一题', options: { 对: '对', 错: '错' }, correct: ['对'] }];
+  quiz.exactControls = (_root, label) => label === '下一页' ? [{ click: () => { nextClicks += 1; } }]
+    : label === '退出' ? [{ click: () => { exitClicks += 1; } }] : [];
+  globalThis.chrome = { storage: { local: {
+    get: async (keys) => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map((key) => [key, storage[key]])),
+    set: async (values) => Object.assign(storage, values),
+  } } };
+  const href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/questionBank/exercises/34';
+  const controller = new StudyController({ document: { querySelectorAll: () => [], documentElement: {} },
+    window: { location: { href }, setTimeout: () => 1, clearTimeout: () => {} } });
+  controller.autoFlow = true;
+  controller.state = 'running';
+  try {
+    for (let index = 0; index < 7 && !exitClicks; index += 1) await controller._continuePractice();
+    assert.equal(nextClicks, 5);
+    assert.equal(exitClicks, 1);
+    assert.equal(controller.state, 'running');
+    assert.deepEqual(storage[quiz.BANK_KEY], ['化学安全题库']);
+  } finally {
+    quiz.questionContainers = originalReader;
+    quiz.exactControls = originalControls;
+    globalThis.chrome = originalChrome;
+  }
+});
+
+test('last completed bank stays on the practice page until the course check time', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalReader = quiz.questionContainers;
+  const originalControls = quiz.exactControls;
+  const storage = { [quiz.BANK_KEY]: ['化学安全题库'],
+    [quiz.BANK_LIST_KEY]: ['化学安全题库', '消防安全题库'], labsafeActivePracticeBankV1: '消防安全题库' };
+  let exitClicks = 0;
+  quiz.questionContainers = () => [{ kind: 'judgment', stem: '最后一题', options: { 对: '对', 错: '错' }, correct: ['对'] }];
+  quiz.exactControls = (_root, label) => label === '退出' ? [{ click: () => { exitClicks += 1; } }] : [];
+  globalThis.chrome = { storage: { local: {
+    get: async (keys) => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map((key) => [key, storage[key]])),
+    set: async (values) => Object.assign(storage, values),
+  } } };
+  const href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/questionBank/exercises/35';
+  const controller = new StudyController({ document: { querySelectorAll: () => [], documentElement: {} },
+    window: { location: { href }, setTimeout: () => 1, clearTimeout: () => {} } });
+  controller.autoFlow = true;
+  controller.state = 'running';
+  controller.autoContext = { practiceCheckAt: Date.now() + 60000 };
+  try {
+    await controller._continuePractice();
+    assert.equal(exitClicks, 0);
+    assert.deepEqual(storage[quiz.BANK_KEY], ['化学安全题库', '消防安全题库']);
+    controller.autoContext.practiceCheckAt = Date.now() - 1;
+    await controller._continuePractice();
+    assert.equal(exitClicks, 1);
+  } finally {
+    quiz.questionContainers = originalReader;
+    quiz.exactControls = originalControls;
+    globalThis.chrome = originalChrome;
+  }
+});
+
 test('practice exit is bounded when the page never changes', async () => {
   const originalChrome = globalThis.chrome;
   const originalReader = quiz.questionContainers;

@@ -208,6 +208,23 @@ featureTest('COURSE_DEFERRED records an unfinished period without marking it com
   assert.deepEqual(await send(chrome, { type: 'COURSE_DEFERRED', periodId: 'period-8' }, { tab: { id: 8 } }), { ok: false });
 });
 
+featureTest('catalog duration creates a persistent practice time checkpoint and rechecks stale progress', async () => {
+  const { chrome, data, tabs, sent } = makeChrome([{ id: 7, url: courseUrl }]);
+  createBackground(chrome);
+  await send(chrome, { type: 'FLOW_START', tabId: 7, rate: 1 });
+  const before = Date.now();
+  const first = await send(chrome, { type: 'COURSE_PICKED', courseKey: 'course-ab12', learnedSeconds: 60, requiredSeconds: 600 }, { tab: { id: 7 } });
+  assert.ok(first.session.practiceCheckAt >= before + 540000);
+  assert.ok(first.session.practiceCheckAt <= Date.now() + 540000 + 300000);
+  tabs.get(7).url = 'https://labsafe.lzjtu.edu.cn/lab-study-front/questionBank/exercises/34';
+  await chrome.tabs.onUpdated.emit(7, { status: 'complete' }, { ...tabs.get(7) });
+  assert.equal(sent.at(-1).message.practiceCheckAt, first.session.practiceCheckAt);
+  data.labsafeSessions['7'].practiceCheckAt = Date.now() - 1000;
+  const second = await send(chrome, { type: 'COURSE_PICKED', courseKey: 'course-ab12', learnedSeconds: 60, requiredSeconds: 600 }, { tab: { id: 7 } });
+  assert.ok(second.session.practiceCheckAt > Date.now());
+  assert.ok(second.session.practiceCheckAt <= Date.now() + 300000);
+});
+
 featureTest('completing a module child preserves the catalog parent until the module itself meets its timer', async () => {
   const { chrome, sent } = makeChrome([{ id: 7, url: courseUrl }]);
   createBackground(chrome);

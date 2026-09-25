@@ -578,6 +578,7 @@
       this.practiceBankPendingSince = 0;
       this.practiceClosingModalSince = 0;
       this.practiceReturningBankSince = 0;
+      this.practiceTerminalSignature = null;
       this.autoFlow = false;
       this.autoContext = null;
       this.autoRouteKey = '';
@@ -853,6 +854,7 @@
         deferredKeys: new Set(Array.isArray(message.deferredKeys) ? message.deferredKeys.filter((key) => /^course-[a-z0-9]{1,8}$/.test(key)) : []),
         deferredPeriodIds: new Set(Array.isArray(message.deferredPeriodIds) ? message.deferredPeriodIds.map(String).filter((id) => /^[\w-]{1,80}$/.test(id)) : []),
         pendingKey: /^course-[a-z0-9]{1,8}$/.test(message.pendingKey || '') ? message.pendingKey : null,
+        practiceCheckAt: Number.isSafeInteger(message.practiceCheckAt) && message.practiceCheckAt > 0 ? message.practiceCheckAt : null,
         moduleParentPeriodId: /^[\w-]{1,80}$/.test(message.moduleParentPeriodId || '') ? message.moduleParentPeriodId : null,
       };
       this.moduleVisitedKeys = new Set(Array.isArray(message.visitedModuleKeys)
@@ -911,6 +913,9 @@
       }
       if (routeKind === 'catalog') {
         this.practiceMode = false;
+        this.practiceClosingModalSince = 0;
+        this.practiceReturningBankSince = 0;
+        this.practiceBankPendingName = null;
         if (this.catalogMode && this.autoRouteKey === routeKey && this.state === 'paused') return this.resume();
         if (this.catalogMode && this.autoRouteKey === routeKey && this.state === 'running') return this._continueCatalog();
         this._stopProgressMonitor();
@@ -941,6 +946,14 @@
         return this._continueEntry();
       }
       if (routeKind === 'practice' || routeKind === 'practiceBank') {
+        if (routeKind === 'practice' && this.autoRouteKey !== routeKey) {
+          this.practicePageSignature = null;
+          this.practicePageRetries = 0;
+          this.practiceTerminalSignature = null;
+          this.practiceExitSignature = null;
+          this.practiceExitRetries = 0;
+          this.practicePendingQuestion = null;
+        }
         this._stopProgressMonitor();
         this._detachVideo();
         this.playerMode = false;
@@ -1012,6 +1025,10 @@
       try {
         const modal = this._hasPracticeBankModal();
         const candidates = this._practiceBankCandidates();
+        if (this.practiceBankPendingName && !Quiz.isPracticeUrl(this.window?.location?.href)) {
+          if (Date.now() - this.practiceBankPendingSince > 12000) return this._setAttention('点击题库后页面没有进入练习，已停止避免重复点击。');
+          return this._schedulePractice(1000);
+        }
         if (this.practiceClosingModalSince && modal) {
           if (Date.now() - this.practiceClosingModalSince > 12000) return this._setAttention('关闭题库弹窗后页面没有变化。');
           return this._schedulePractice(1000);
@@ -1024,23 +1041,24 @@
           const storage = globalThis.chrome?.storage?.local;
           if (!storage) return this._setAttention('无法访问本地题库记录，已停止。');
           const saved = await storage.get(Quiz.BANK_KEY);
-          const visited = Array.isArray(saved[Quiz.BANK_KEY]) ? saved[Quiz.BANK_KEY] : [];
-          if (this.practiceBankPendingName) {
-            if (Date.now() - this.practiceBankPendingSince > 12000) return this._setAttention('点击题库后页面没有进入练习，已停止避免跳过题库。');
-            return this._schedulePractice(1000);
+          const visited = Array.isArray(saved[Quiz.BANK_KEY]) ? saved[Quiz.BANK_KEY].map(Quiz.bankName) : [];
+          const names = candidates.map((node) => Quiz.bankName(node.innerText ?? node.textContent));
+          if (new Set(names).size !== names.length) return this._setAttention('题库名称重复，无法安全切换。');
+          await storage.set({ [Quiz.BANK_LIST_KEY]: names });
+          let next = candidates.find((node) => !visited.includes(Quiz.bankName(node.innerText ?? node.textContent)));
+          if (!next && this.autoContext?.practiceCheckAt > Date.now()) {
+            next = candidates.find((node) => Quiz.bankName(node.innerText ?? node.textContent) === visited.at(-1));
           }
-          const next = candidates.find((node) => !visited.includes(Quiz.clean(node.innerText ?? node.textContent))) || candidates[0];
-          const name = Quiz.clean(next.innerText ?? next.textContent);
-          if (visited.includes(name)) {
+          if (!next) {
             const close = Array.from(this.document.querySelectorAll('.ivu-modal-close, .el-dialog__headerbtn'))
               .filter((node) => Quiz.visible(node, this.window));
             if (close.length !== 1) return this._setAttention('本轮题库均已练习，但无法安全返回课程列表核对时长。');
-            await storage.set({ [Quiz.BANK_KEY]: [] });
             this.practiceClosingModalSince = Date.now();
             close[0].click();
             return this._schedulePractice(1200);
           }
-          await storage.set({ [Quiz.BANK_KEY]: [...visited, name], labsafeActivePracticeBankV1: name });
+          const name = Quiz.bankName(next.innerText ?? next.textContent);
+          await storage.set({ labsafeActivePracticeBankV1: name });
           if (this.state !== 'running') return this.status();
           this.practiceBankPendingName = name;
           this.practiceBankPendingSince = Date.now();
@@ -1056,17 +1074,22 @@
             const storage = globalThis.chrome?.storage?.local;
             if (!storage) return this._setAttention('无法访问本地题库记录，已停止。');
             const saved = await storage.get(Quiz.BANK_KEY);
-            const visited = Array.isArray(saved[Quiz.BANK_KEY]) ? saved[Quiz.BANK_KEY] : [];
-            const next = cards.find((card) => !visited.includes(card.name));
+            const visited = Array.isArray(saved[Quiz.BANK_KEY]) ? saved[Quiz.BANK_KEY].map(Quiz.bankName) : [];
+            await storage.set({ [Quiz.BANK_LIST_KEY]: cards.map((card) => card.name) });
+            let next = cards.find((card) => !visited.includes(card.name));
+            if (!next && this.autoContext?.practiceCheckAt > Date.now()) {
+              next = cards.find((card) => card.name === visited.at(-1));
+            }
             if (!next) {
               const backs = Quiz.exactControls(this.document, '返回', this.window);
               if (backs.length !== 1) return this._setAttention('本轮题库均已练习，但无法安全返回课程列表核对时长。');
-              await storage.set({ [Quiz.BANK_KEY]: [] });
               this.practiceReturningBankSince = Date.now();
               backs[0].click();
               return this._schedulePractice(1200);
             }
-            await storage.set({ [Quiz.BANK_KEY]: [...visited, next.name], labsafeActivePracticeBankV1: next.name });
+            await storage.set({ labsafeActivePracticeBankV1: next.name });
+            this.practiceBankPendingName = next.name;
+            this.practiceBankPendingSince = Date.now();
             next.control.click();
             return this._schedulePractice(1200);
           }
@@ -1098,7 +1121,7 @@
           return this._schedulePractice(1000);
         }
         this.practiceRetries = 0;
-        const saved = await storage.get([Quiz.STORAGE_KEY, 'labsafeActivePracticeBankV1']);
+        const saved = await storage.get([Quiz.STORAGE_KEY, Quiz.BANK_KEY, Quiz.BANK_LIST_KEY, 'labsafeActivePracticeBankV1']);
         const records = saved[Quiz.STORAGE_KEY] && typeof saved[Quiz.STORAGE_KEY] === 'object' ? saved[Quiz.STORAGE_KEY] : {};
         const bankId = new URL(this.window.location.href).pathname.split('/').filter(Boolean).at(-1);
         const bank = saved.labsafeActivePracticeBankV1 || bankId;
@@ -1158,12 +1181,28 @@
         const nextControls = Quiz.exactControls(this.document, '下一页', this.window);
         if (nextControls.length > 1) return this._setAttention('练习页存在多个可用的“下一页”控件，已停止避免误点。');
         const next = nextControls[0];
-        if (next) {
-          if (this.practicePageSignature === signature) this.practicePageRetries = (this.practicePageRetries || 0) + 1;
-          else { this.practicePageSignature = signature; this.practicePageRetries = 0; }
-          if (this.practicePageRetries >= 5) return this._setAttention('点击练习下一页后题目没有变化，已停止避免循环。');
+        if (this.practicePageSignature !== signature) {
+          this.practicePageSignature = signature;
+          this.practicePageRetries = 0;
+          this.practiceTerminalSignature = null;
+        }
+        if (next && this.practiceTerminalSignature !== signature && this.practicePageRetries < 5) {
+          this.practicePageRetries += 1;
           next.click();
           return this._schedulePractice(1500);
+        }
+        if (next && this.practicePageRetries >= 5) this.practiceTerminalSignature = signature;
+        const bankName = Quiz.bankName(saved.labsafeActivePracticeBankV1);
+        const bankNames = Array.isArray(saved[Quiz.BANK_LIST_KEY]) ? saved[Quiz.BANK_LIST_KEY].map(Quiz.bankName) : [];
+        const visited = Array.isArray(saved[Quiz.BANK_KEY]) ? saved[Quiz.BANK_KEY].map(Quiz.bankName) : [];
+        if (bankName && bankNames.includes(bankName) && !visited.includes(bankName)) {
+          visited.push(bankName);
+          await storage.set({ [Quiz.BANK_KEY]: visited });
+        }
+        const allBanksRecorded = bankNames.length > 0 && bankNames.every((name) => visited.includes(name));
+        if (allBanksRecorded && this.autoContext?.practiceCheckAt > Date.now()) {
+          this._markStep('practice-waiting-for-course-time');
+          return this._schedulePractice(10000);
         }
         const exits = Quiz.exactControls(this.document, '退出', this.window);
         if (exits.length !== 1) return this._setAttention('本页题目已采集，但无法确认下一页或退出控件。');
@@ -1423,10 +1462,15 @@
       if (row) {
         this._markStep(`row:${row.courseKey}`);
         const operation = (async () => {
-          const ack = await this._sendBackground('COURSE_PICKED', { courseKey: row.courseKey });
+          const ack = await this._sendBackground('COURSE_PICKED', {
+            courseKey: row.courseKey,
+            learnedSeconds: row.learnedSeconds,
+            requiredSeconds: row.requiredSeconds,
+          });
           if (!ack?.ok) return this._setAttention('后台未确认课程选择，已停止自动操作。');
           if (this.state !== 'running') return this.status();
           this.autoContext.pendingKey = row.courseKey;
+          this.autoContext.practiceCheckAt = ack.session?.practiceCheckAt || null;
           try {
             this.catalogSelecting = true;
             const originHref = String(this.window?.location?.href || '');

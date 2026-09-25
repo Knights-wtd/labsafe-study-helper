@@ -45,6 +45,8 @@
       deferredKeys: Array.isArray(value.deferredKeys) ? [...new Set(value.deferredKeys.filter((item) => typeof item === 'string').slice(0, 500))] : [],
       deferredPeriodIds: Array.isArray(value.deferredPeriodIds) ? [...new Set(value.deferredPeriodIds.filter((item) => typeof item === 'string').slice(0, 500))] : [],
       pendingKey: typeof value.pendingKey === 'string' ? value.pendingKey : null,
+      ...(Number.isSafeInteger(value.practiceCheckAt) && value.practiceCheckAt > 0
+        ? { practiceCheckAt: value.practiceCheckAt } : {}),
       ...(typeof value.moduleParentPeriodId === 'string' && /^[\w-]{1,80}$/.test(value.moduleParentPeriodId)
         ? { moduleParentPeriodId: value.moduleParentPeriodId } : {}),
       ...(Array.isArray(value.visitedModuleKeys) ? {
@@ -122,6 +124,7 @@
             deferredKeys: session.deferredKeys,
             deferredPeriodIds: session.deferredPeriodIds,
             pendingKey: session.pendingKey,
+            ...(session.practiceCheckAt ? { practiceCheckAt: session.practiceCheckAt } : {}),
             ...(session.moduleParentPeriodId ? { moduleParentPeriodId: session.moduleParentPeriodId } : {}),
             ...(session.visitedModuleKeys ? { visitedModuleKeys: session.visitedModuleKeys } : {}),
           });
@@ -197,7 +200,21 @@
           if (!Number.isInteger(senderTabId) || !/^course-[a-z0-9]{1,8}$/.test(courseKey || '') || !await allowedTab(senderTabId)) return { ok: false };
           const session = await getSession(senderTabId);
           if (!session || session.phase !== 'running') return { ok: false };
+          const sameCourse = session.pendingKey === courseKey;
+          const priorCheckAt = session.practiceCheckAt;
           session.pendingKey = courseKey;
+          const learned = message.learnedSeconds;
+          const required = message.requiredSeconds;
+          if (Number.isSafeInteger(learned) && Number.isSafeInteger(required) &&
+            learned >= 0 && learned < required && required <= 864000) {
+            const now = Date.now();
+            const freshCheckAt = now + (required - learned) * 1000 + 300000;
+            session.practiceCheckAt = sameCourse && priorCheckAt
+              ? (priorCheckAt > now ? Math.min(priorCheckAt, freshCheckAt) : now + 300000)
+              : freshCheckAt;
+          } else {
+            delete session.practiceCheckAt;
+          }
           delete session.moduleParentPeriodId;
           delete session.visitedModuleKeys;
           await putSession(session);
@@ -226,6 +243,7 @@
           if (!session.moduleParentPeriodId || session.moduleParentPeriodId === normalizedPeriodId) {
             if (session.pendingKey && !session.completedKeys.includes(session.pendingKey)) session.completedKeys.push(session.pendingKey);
             session.pendingKey = null;
+            delete session.practiceCheckAt;
             delete session.moduleParentPeriodId;
             delete session.visitedModuleKeys;
           }
@@ -243,6 +261,7 @@
           if (!session.moduleParentPeriodId || session.moduleParentPeriodId === normalizedPeriodId) {
             if (session.pendingKey && !session.deferredKeys.includes(session.pendingKey)) session.deferredKeys.push(session.pendingKey);
             session.pendingKey = null;
+            delete session.practiceCheckAt;
             delete session.moduleParentPeriodId;
             delete session.visitedModuleKeys;
           }

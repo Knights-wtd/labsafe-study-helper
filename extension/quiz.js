@@ -3,7 +3,9 @@
 
   const STORAGE_KEY = 'labsafePracticeQuestionsV1';
   const BANK_KEY = 'labsafePracticeBanksV1';
+  const BANK_LIST_KEY = 'labsafePracticeBankNamesV1';
   const clean = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
+  const bankName = (value) => clean(value).replace(/^\d+[.．、]\s*/, '');
 
   function isPracticeUrl(value) {
     try {
@@ -154,11 +156,11 @@
         const matches = [...new Set(text.match(/[^\s，,。]{2,40}题库/g) || [])];
         if (matches.length === 1 && text.length < 180) { name = matches[0]; break; }
       }
-      return name ? { name, control } : null;
+      return name ? { name: bankName(name), control } : null;
     }).filter(Boolean);
   }
 
-  const api = { STORAGE_KEY, BANK_KEY, isPracticeUrl, isBankUrl, parseAnswer, questionKey, parseQuestionText, questionContainers, questionAction, choiceState, nextPage, bankCards, exactControls, clean, visible };
+  const api = { STORAGE_KEY, BANK_KEY, BANK_LIST_KEY, bankName, isPracticeUrl, isBankUrl, parseAnswer, questionKey, parseQuestionText, questionContainers, questionAction, choiceState, nextPage, bankCards, exactControls, clean, visible };
   if (typeof module === 'object' && module?.exports) module.exports = api;
   if (typeof globalThis !== 'undefined') globalThis.LabSafeQuiz = api;
 })();

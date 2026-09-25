@@ -153,7 +153,8 @@
 
   async function startOnTab(tab, rate) {
     try {
-      await chrome.storage.local.set({ [RATE_KEY]: rate, labsafePracticeBanksV1: [] });
+      await chrome.storage.local.set({ [RATE_KEY]: rate, labsafePracticeBanksV1: [],
+        labsafePracticeBankNamesV1: [], labsafeActivePracticeBankV1: '' });
     } catch {
       throw new Error('无法保存倍速设置。');
     }
