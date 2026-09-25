@@ -111,11 +111,18 @@
     });
     if (controls.some((control) => !control || !visible(control, view))) return null;
     if (question.kind === 'multiple') {
-      const submit = exactControls(question.container, '提交答案', view);
-      if (submit.length !== 1) return null;
-      return { type: 'answer', controls, submit: submit[0] };
+      return { type: 'select', controls };
     }
     return { type: 'answer', controls };
+  }
+
+  function choiceState(label) {
+    const input = label?.querySelector?.('input');
+    if (typeof input?.checked === 'boolean') return input.checked;
+    const classes = String(label?.className || '').split(/\s+/);
+    if (classes.some((name) => /(?:^|-)checked(?:$|-)/.test(name))) return true;
+    if (classes.some((name) => name === 'ivu-checkbox-wrapper')) return false;
+    return null;
   }
 
   function nextPage(document, view) {
@@ -135,7 +142,7 @@
     }).filter(Boolean);
   }
 
-  const api = { STORAGE_KEY, BANK_KEY, isPracticeUrl, isBankUrl, parseAnswer, questionKey, parseQuestionText, questionContainers, questionAction, nextPage, bankCards, exactControls, clean, visible };
+  const api = { STORAGE_KEY, BANK_KEY, isPracticeUrl, isBankUrl, parseAnswer, questionKey, parseQuestionText, questionContainers, questionAction, choiceState, nextPage, bankCards, exactControls, clean, visible };
   if (typeof module === 'object' && module?.exports) module.exports = api;
   if (typeof globalThis !== 'undefined') globalThis.LabSafeQuiz = api;
 })();

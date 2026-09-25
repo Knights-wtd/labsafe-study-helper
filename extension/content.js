@@ -572,6 +572,8 @@
       this.practiceRetries = 0;
       this.practicePendingQuestion = null;
       this.practicePendingSince = 0;
+      this.practicePendingStage = null;
+      this.practiceSelectRetries = 0;
       this.practiceBankPendingName = null;
       this.practiceBankPendingSince = 0;
       this.practiceClosingModalSince = 0;
@@ -1103,7 +1105,10 @@
         for (const question of questions) {
           const key = Quiz.questionKey(bankId, question.stem);
           if (question.correct) {
-            if (this.practicePendingQuestion === key) this.practicePendingQuestion = null;
+            if (this.practicePendingQuestion === key) {
+              this.practicePendingQuestion = null;
+              this.practicePendingStage = null;
+            }
             const previous = records[key];
             if (!previous || JSON.stringify(previous.correct) !== JSON.stringify(question.correct)) {
               records[key] = { bankId, bank, kind: question.kind, stem: question.stem, options: question.options, correct: question.correct, capturedAt: new Date().toISOString() };
@@ -1112,17 +1117,40 @@
             }
             continue;
           }
-          const action = Quiz.questionAction(question, records[key], this.window);
-          if (!action) return this._setAttention('练习题的选项或提交按钮无法唯一确认。');
           if (this.practicePendingQuestion === key) {
+            if (question.kind === 'multiple' && this.practicePendingStage === 'selected') {
+              const submits = Quiz.exactControls(question.container, '提交答案', this.window);
+              if (submits.length > 1) return this._setAttention('当前多选题有多个“提交答案”控件，已停止避免误点。');
+              if (submits.length === 1) {
+                submits[0].click();
+                this.practicePendingStage = 'submitted';
+                this.practicePendingSince = Date.now();
+                this._markStep('practice-submitted');
+                return this._schedulePractice(1200);
+              }
+              if (Date.now() - this.practicePendingSince >= 2500 && this.practiceSelectRetries < 2) {
+                const action = Quiz.questionAction(question, records[key], this.window);
+                const unchecked = action?.controls.filter((control) => Quiz.choiceState(control) === false) || [];
+                if (unchecked.length) {
+                  for (const control of unchecked) control.click();
+                  this.practiceSelectRetries += 1;
+                  this.practicePendingSince = Date.now();
+                  this._markStep('practice-select-retry');
+                  return this._schedulePractice(1200);
+                }
+              }
+            }
             if (Date.now() - this.practicePendingSince > 15000) return this._setAttention('作答后长时间未显示正确答案，已停止避免重复提交。');
             return this._schedulePractice(1000);
           }
+          const action = Quiz.questionAction(question, records[key], this.window);
+          if (!action) return this._setAttention('练习题的选项无法唯一确认。');
           if (this.state !== 'running') return this.status();
           this.practicePendingQuestion = key;
           this.practicePendingSince = Date.now();
+          this.practicePendingStage = action.type === 'select' ? 'selected' : 'submitted';
+          this.practiceSelectRetries = 0;
           for (const control of action.controls) control.click();
-          if (action.submit) action.submit.click();
           this._markStep('practice-answered');
           return this._schedulePractice(1200);
         }

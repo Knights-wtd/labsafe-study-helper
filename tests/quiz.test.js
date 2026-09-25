@@ -49,18 +49,17 @@ test('practice page enters the practice controller instead of video handling', a
   assert.deepEqual(await controller._continueAutoRoute(), { state: 'running', mode: 'practice' });
 });
 
-test('multiple choice uses the question-local submit control after selecting known answers', () => {
+test('multiple choice can select an answer before the submit control appears', () => {
   const inputA = { click() {} };
   const inputC = { click() {} };
   const labels = [
     { textContent: 'A、20℃', querySelector: () => inputA },
     { textContent: 'C、30℃', querySelector: () => inputC },
   ];
-  const submit = { textContent: '提交答案', querySelectorAll: () => [], getAttribute: () => null };
-  const container = { querySelectorAll: () => [submit] };
+  const container = { querySelectorAll: () => [] };
   const action = quiz.questionAction({ kind: 'multiple', correct: null, options: { A: '20℃', C: '30℃' }, labels, container }, { correct: ['C'] });
   assert.deepEqual(action.controls, [labels[1]]);
-  assert.equal(action.submit, submit);
+  assert.equal(action.type, 'select');
 });
 
 test('practice controller submits a multiple choice question once and records revealed truth', async () => {
@@ -74,7 +73,7 @@ test('practice controller submits a multiple choice question once and records re
   const question = {
     kind: 'multiple', stem: '虚构多选题（）', options: { A: '选项甲', B: '选项乙' }, correct: null,
     labels: [{ textContent: 'A、选项甲', querySelector: () => choice, click: () => { selected += 1; } }],
-    container: { querySelectorAll: () => [submit] },
+    container: { querySelectorAll: () => selected ? [submit] : [] },
   };
   quiz.questionContainers = () => [question];
   globalThis.chrome = { storage: { local: {
@@ -91,6 +90,8 @@ test('practice controller submits a multiple choice question once and records re
   try {
     await controller._continuePractice();
     assert.equal(selected, 1);
+    assert.equal(submitted, 0);
+    await controller._continuePractice();
     assert.equal(submitted, 1);
     await controller._continuePractice();
     assert.equal(submitted, 1);
@@ -199,4 +200,48 @@ test('diagnosis reports practice structure and attention without copying questio
   assert.equal(diagnosis.practice.wrapperCount, 1);
   assert.equal(diagnosis.reason, '练习题目结构无法识别。');
   assert.equal(JSON.stringify(diagnosis).includes('敏感题干'), false);
+});
+
+test('checkbox state is read from the native input even when that input is hidden', () => {
+  const input = { checked: false };
+  const label = { className: 'ivu-checkbox-wrapper', querySelector: () => input };
+  assert.equal(quiz.choiceState(label), false);
+  input.checked = true;
+  assert.equal(quiz.choiceState(label), true);
+});
+
+test('a dropped first checkbox click is retried only while still unchecked', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalReader = quiz.questionContainers;
+  const originalControls = quiz.exactControls;
+  let clickCount = 0;
+  let checked = false;
+  let submitCount = 0;
+  const input = { get checked() { return checked; } };
+  const label = { textContent: 'A、甲', querySelector: () => input, click: () => {
+    clickCount += 1;
+    if (clickCount > 1) checked = true;
+  } };
+  const question = { kind: 'multiple', stem: '虚构多选题', options: { A: '甲', B: '乙' }, correct: null, labels: [label], container: {} };
+  quiz.questionContainers = () => [question];
+  quiz.exactControls = (_root, name) => name === '提交答案' && checked ? [{ click: () => { submitCount += 1; } }] : [];
+  globalThis.chrome = { storage: { local: { get: async () => ({}), set: async () => {} } } };
+  const href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/questionBank/exercises/23';
+  const controller = new StudyController({ document: { querySelectorAll: () => [], documentElement: {} },
+    window: { location: { href }, setTimeout: () => 1, clearTimeout: () => {} } });
+  controller.autoFlow = true;
+  controller.state = 'running';
+  try {
+    await controller._continuePractice();
+    assert.equal(clickCount, 1);
+    controller.practicePendingSince = Date.now() - 3000;
+    await controller._continuePractice();
+    assert.equal(clickCount, 2);
+    await controller._continuePractice();
+    assert.equal(submitCount, 1);
+  } finally {
+    quiz.questionContainers = originalReader;
+    quiz.exactControls = originalControls;
+    globalThis.chrome = originalChrome;
+  }
 });
