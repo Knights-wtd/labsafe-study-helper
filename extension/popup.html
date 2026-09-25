@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LabSafe 学习助手</title>
+    <link rel="stylesheet" href="popup.css">
+    <script src="popup.js" defer></script>
+  </head>
+  <body>
+    <main class="panel">
+      <header class="heading">
+        <div class="brand-mark" aria-hidden="true">学</div>
+        <div>
+          <h1>LabSafe 学习助手</h1>
+          <p class="subtitle">仅适用于指定实验学习页面</p>
+        </div>
+      </header>
+
+      <section class="rate-section" aria-labelledby="rate-label">
+        <label id="rate-label" for="rate">播放倍速</label>
+        <div class="rate-control">
+          <input id="rate" name="rate" type="number" min="1" max="16" step="0.25" value="1" inputmode="decimal">
+          <span aria-hidden="true">×</span>
+        </div>
+        <p class="hint">范围 1×–16×，更改后自动保存</p>
+      </section>
+
+      <section class="controls" aria-label="学习控制">
+        <button id="start" class="button button-primary" type="button">开始学习</button>
+        <div class="button-row">
+          <button id="pause" class="button button-secondary" type="button">暂停</button>
+          <button id="resume" class="button button-secondary" type="button">继续</button>
+        </div>
+        <div class="button-row">
+          <button id="stop" class="button button-quiet" type="button">停止</button>
+          <button id="export" class="button button-quiet" type="button">导出诊断</button>
+        </div>
+        <p class="hint diagnostic-note">诊断文件仅含页面结构信息，会下载到本地。</p>
+      </section>
+
+      <section class="feedback" aria-live="polite" aria-atomic="true">
+        <div class="status-line">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="status">就绪</span>
+        </div>
+        <p id="error" class="error" role="alert" hidden></p>
+      </section>
+    </main>
+  </body>
+</html>

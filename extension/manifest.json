@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "LabSafe 学习助手",
+  "version": "1.2.9",
+  "description": "在指定实验室安全学习页面控制视频倍速，并按真实学习计时安全续学。",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://labsafe.lzjtu.edu.cn/lab-study-front/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "LabSafe 学习助手",
+    "default_popup": "popup.html"
+  }
+}
