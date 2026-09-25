@@ -996,6 +996,22 @@ test('a stalled article page with course rows clicks into its first unvisited su
   assert.equal(view.intervals.size, 0, 'monitor stops while waiting for the route change');
 });
 
+test('a stalled module can enter a visible optional subcourse', async () => {
+  const optional = new CatalogElement('li', '选学 实验室安全拓展');
+  const document = {
+    querySelectorAll(selector) { return selector === 'li, tr' ? [optional] : []; },
+    body: { innerText: '已学习 00:00:00 要求学习 03:31:00' },
+    documentElement: {},
+  };
+  const view = fakeWindow(document);
+  view.location.href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/examTask/75/2/1/431';
+  const controller = new StudyController({ document, window: view, runtime: { sendMessage: async () => ({ ok: true }) } });
+  await controller.autoContinue({ rate: 1 });
+  for (let index = 0; index < 15; index += 1) view.runIntervals();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(optional.clickCount, 1);
+});
+
 test('an article page whose timer keeps growing never clicks its course rows', async () => {
   const row1 = new CatalogElement('li', '必学 辐射安全');
   const bodyText = { innerText: '已学习 00:00:01 要求学习 03:31:00' };
@@ -1492,8 +1508,9 @@ test('readCatalogRows recognizes screenshot-like course rows and returns only sa
   const { document } = catalogFixture([first.row, finished.row, optional.row, invalid.row]);
 
   const rows = readCatalogRows(document);
-  assert.equal(rows.length, 1);
+  assert.equal(rows.length, 2);
   assert.equal(rows[0].row, first.row);
+  assert.equal(rows[1].row, optional.row);
   assert.equal(rows[0].button, first.button);
   assert.deepEqual([rows[0].learnedSeconds, rows[0].requiredSeconds], [240, 1380]);
   assert.match(rows[0].courseKey, /^course-[a-z0-9]{1,8}$/);
@@ -1510,6 +1527,15 @@ test('chooseCourseRow picks the first eligible row and skips completed session k
   assert.equal(chooseCourseRow(document).row, first.row);
   assert.equal(chooseCourseRow(document, null, new Set([firstKey])).row, second.row);
   assert.equal(chooseCourseRow(document, null, new Set([firstKey, readCatalogRows(document)[1].courseKey])), null);
+});
+
+test('chooseCourseRow continues from required courses to optional courses', () => {
+  const required = catalogRow('必修课程', '模块甲', '已学习：00:00:00 / 00:08:00');
+  const optional = catalogRow('选修课程', '模块乙', '已学习：00:00:00 / 00:08:00', { tag: '选学' });
+  const { document } = catalogFixture([required.row, optional.row]);
+  const requiredKey = readCatalogRows(document)[0].courseKey;
+  assert.equal(chooseCourseRow(document).row, required.row);
+  assert.equal(chooseCourseRow(document, null, new Set([requiredKey])).row, optional.row);
 });
 
 test('catalog selection rejects ambiguous rows, disabled controls, exams, and hidden candidates', () => {
