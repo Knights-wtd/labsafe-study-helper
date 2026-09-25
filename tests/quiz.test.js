@@ -14,6 +14,19 @@ test('single and multiple answer feedback is parsed without confusing my answer'
   assert.deepEqual(quiz.parseAnswer('正确答案：C 我的答案：A,B'), ['C']);
   assert.deepEqual(quiz.parseAnswer('正确答案：A、C、D 我的答案：B'), ['A', 'C', 'D']);
   assert.equal(quiz.parseAnswer('我的答案：A,B'), null);
+  assert.deepEqual(quiz.parseAnswer('正确答案：对 我的答案：对'), ['对']);
+  assert.deepEqual(quiz.parseAnswer('正确答案：错 我的答案：对'), ['错']);
+});
+
+test('judgment question uses 对/错 options and a revealed truth answer', () => {
+  const labels = [{ textContent: '对' }, { textContent: '错' }];
+  const parsed = quiz.parseQuestionText('221. 判断题 液体表面的蒸汽遇火发生闪灭的现象是闪点。', labels,
+    '正确答案：对 我的答案：对');
+  assert.equal(parsed.kind, 'judgment');
+  assert.deepEqual(parsed.options, { 对: '对', 错: '错' });
+  assert.deepEqual(parsed.correct, ['对']);
+  const action = quiz.questionAction({ ...parsed, correct: null, labels }, { correct: ['错'] });
+  assert.deepEqual(action.controls, [labels[1]]);
 });
 
 test('question identity stays stable across question numbering and whitespace', () => {
@@ -184,6 +197,53 @@ test('multiple choice wrappers are found even without a checkbox group element',
     querySelectorAll: (selector) => selector === '.ivu-radio-wrapper, .ivu-checkbox-wrapper' ? labels : [],
   };
   assert.equal(quiz.questionContainers(document).length, 1);
+});
+
+test('judgment questions with CSS numbering are recognized from 对/错 radio wrappers', () => {
+  const body = {};
+  const labels = [{ textContent: '对' }, { textContent: '错' }];
+  const container = {
+    innerText: '判断题 液体表面蒸汽遇火发生闪灭的现象是闪点。 对 错',
+    parentElement: body,
+    querySelectorAll: (selector) => selector.includes('wrapper') ? labels : [],
+  };
+  for (const label of labels) label.parentElement = container;
+  const document = { body, querySelectorAll: (selector) => selector === '.ivu-radio-wrapper, .ivu-checkbox-wrapper' ? labels : [] };
+  const questions = quiz.questionContainers(document);
+  assert.equal(questions.length, 1);
+  assert.equal(questions[0].stem, '液体表面蒸汽遇火发生闪灭的现象是闪点。');
+  assert.equal(questions[0].kind, 'judgment');
+});
+
+test('controller records an answered judgment item and continues to the next one', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalReader = quiz.questionContainers;
+  const storage = {};
+  let nextClicks = 0;
+  const answered = { kind: 'judgment', stem: '已揭示的判断题', options: { 对: '对', 错: '错' }, correct: ['对'] };
+  const next = { kind: 'judgment', stem: '下一道判断题', options: { 对: '对', 错: '错' }, correct: null,
+    labels: [{ textContent: '对', click: () => { nextClicks += 1; } }, { textContent: '错', click: () => {} }] };
+  quiz.questionContainers = () => [answered, next];
+  globalThis.chrome = { storage: { local: {
+    get: async (keys) => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map((key) => [key, storage[key]])),
+    set: async (values) => Object.assign(storage, values),
+  } } };
+  const href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/questionBank/exercises/23';
+  const controller = new StudyController({ document: { querySelectorAll: () => [], documentElement: {} },
+    window: { location: { href }, setTimeout: () => 1, clearTimeout: () => {} } });
+  controller.autoFlow = true;
+  controller.state = 'running';
+  try {
+    await controller._continuePractice();
+    assert.equal(nextClicks, 1);
+    assert.equal(Object.values(storage[quiz.STORAGE_KEY]).length, 1);
+    next.correct = ['错'];
+    await controller._continuePractice();
+    assert.equal(Object.values(storage[quiz.STORAGE_KEY]).length, 2);
+  } finally {
+    quiz.questionContainers = originalReader;
+    globalThis.chrome = originalChrome;
+  }
 });
 
 test('diagnosis reports practice structure and attention without copying question text', () => {
