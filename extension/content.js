@@ -516,8 +516,12 @@
     if (!document?.querySelectorAll) return null;
     const candidates = new Set();
     for (const element of Array.from(document.querySelectorAll('button, a, [role="button"], *'))) {
-      const text = String(element?.innerText ?? element?.textContent ?? '').replace(/\s+/g, ' ').trim();
-      if (text !== '返回' || !isVisible(element, view)) continue;
+      const text = String(element?.innerText ?? element?.textContent ?? '').replace(/[\s\u200b-\u200d\ufeff]/g, '');
+      const prefix = text.endsWith('返回') ? text.slice(0, -2) : null;
+      const decoratedReturn = prefix !== null && /^[←↩↶⟵‹«<\ue000-\uf8ff]{0,2}$/.test(prefix);
+      const accessibleReturn = ['aria-label', 'title'].some((name) =>
+        String(element?.getAttribute?.(name) || '').trim() === '返回');
+      if ((!decoratedReturn && !accessibleReturn) || !isVisible(element, view)) continue;
       let target = element;
       for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
         if (['BUTTON', 'A'].includes(String(ancestor.tagName || '').toUpperCase()) || ancestor.getAttribute?.('role') === 'button') {
@@ -2123,6 +2127,23 @@
       const controls = this.document?.querySelectorAll
         ? Array.from(this.document.querySelectorAll('button, a, [role="button"]'))
         : [];
+      const returnCandidates = this.document?.querySelectorAll
+        ? Array.from(this.document.querySelectorAll('*')).filter((element) => {
+          const label = String(element.innerText ?? element.textContent ?? '').replace(/\s+/g, ' ').trim();
+          return (label.includes('返回') && label.length <= 30) ||
+            ['aria-label', 'title'].some((name) => String(element.getAttribute?.(name) || '').trim() === '返回');
+        }).slice(0, 30).map((element) => {
+          const label = String(element.innerText ?? element.textContent ?? '').replace(/\s+/g, ' ').trim();
+          return {
+            tag: String(element.tagName || '').toLowerCase(),
+            labelKind: label === '返回' ? 'exact' : label.endsWith('返回') ? 'suffix' :
+              ['aria-label', 'title'].some((name) => String(element.getAttribute?.(name) || '').trim() === '返回') ? 'accessible' : 'other',
+            prefixCodes: label.endsWith('返回') ? [...label.slice(0, -2)].slice(0, 4).map((char) => char.codePointAt(0).toString(16)) : [],
+            parentTag: String(element.parentElement?.tagName || '').toLowerCase(),
+            visible: isVisible(element, this.window),
+            enabled: isEnabled(element),
+          };
+        }) : [];
       let practice = null;
       if (Quiz?.isPracticeUrl(this.window?.location?.href)) {
         const groupCount = this.document.querySelectorAll?.('.ivu-radio-group, .ivu-checkbox-group')?.length ?? 0;
@@ -2139,6 +2160,7 @@
         videoCount: videos.length,
         visibleVideoCount: videos.filter((video) => isVisible(video, this.window)).length,
         frameCount: frames.length,
+        returnCandidates,
         candidates: controls.slice(0, 100).map((element) => ({
           tag: String(element.tagName || '').toLowerCase(),
           role: getSafeDiagnosticRole(element),

@@ -423,13 +423,19 @@ test('person to catalog to safety video to catalog completes the serial learning
 test('article return selector requires one visible exact 返回 control', () => {
   const back = new FakeElement('button', '返回');
   assert.equal(chooseArticleReturn(new FakeDocument([back])), back);
+  const decorated = new FakeElement('span', '↶ 返回');
+  assert.equal(chooseArticleReturn(new FakeDocument([decorated])), decorated);
+  const fontIcon = new FakeElement('span', '\ue600 返回');
+  assert.equal(chooseArticleReturn(new FakeDocument([fontIcon])), fontIcon);
+  assert.equal(chooseArticleReturn(new FakeDocument([decorated, new FakeElement('span', '← 返回')])), null);
   assert.equal(chooseArticleReturn(new FakeDocument([back, new FakeElement('a', '返回')])), null);
   assert.equal(chooseArticleReturn(new FakeDocument([new FakeElement('button', '返回课程主页')])), null);
+  assert.equal(chooseArticleReturn(new FakeDocument([new FakeElement('button', '确认返回')])), null);
   assert.equal(chooseArticleReturn(new FakeDocument([new FakeElement('button', '返回', { style: { display: 'none' } })])), null);
 });
 
 test('article mode completes from visible counter without requiring a video', () => {
-  const back = new FakeElement('button', '返回');
+  const back = new FakeElement('span', '↶ 返回');
   const document = new FakeDocument([back], '已学习 00:15 要求学习 02:00');
   const view = fakeWindow(document);
   view.location.href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/examTask/75/5/1/4';

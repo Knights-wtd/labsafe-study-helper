@@ -489,9 +489,11 @@ test('controller records an answered judgment item and continues to the next one
 test('diagnosis reports practice structure and attention without copying question text', () => {
   const href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/questionBank/exercises/23';
   const wrapper = { textContent: 'A、敏感题干' };
+  const returnControl = { tagName: 'SPAN', textContent: '↶ 返回', getBoundingClientRect: () => ({ width: 30, height: 20 }) };
   const document = {
     body: { innerText: '敏感题干' }, documentElement: {},
-    querySelectorAll: (selector) => selector === '.ivu-radio-wrapper, .ivu-checkbox-wrapper' ? [wrapper] : [],
+    querySelectorAll: (selector) => selector === '.ivu-radio-wrapper, .ivu-checkbox-wrapper' ? [wrapper]
+      : selector === '*' ? [wrapper, returnControl] : [],
   };
   const controller = new StudyController({ document, window: { location: { href } } });
   controller.state = 'needsAttention';
@@ -499,6 +501,8 @@ test('diagnosis reports practice structure and attention without copying questio
   const diagnosis = controller.diagnose();
   assert.equal(diagnosis.practice.wrapperCount, 1);
   assert.equal(diagnosis.reason, '练习题目结构无法识别。');
+  assert.equal(diagnosis.returnCandidates[0].labelKind, 'suffix');
+  assert.deepEqual(diagnosis.returnCandidates[0].prefixCodes, ['21b6', '20']);
   assert.equal(JSON.stringify(diagnosis).includes('敏感题干'), false);
 });
 
