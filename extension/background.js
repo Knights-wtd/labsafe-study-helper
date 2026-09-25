@@ -113,7 +113,7 @@
           return false;
         }
         try {
-          await chromeApi.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+          await chromeApi.scripting.executeScript({ target: { tabId }, files: ['quiz.js', 'content.js'] });
           await chromeApi.tabs.sendMessage(tabId, {
             type: 'AUTO_CONTINUE',
             rate: session.rate,

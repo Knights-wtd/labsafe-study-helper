@@ -1,6 +1,8 @@
 (() => {
   'use strict';
 
+  const Quiz = globalThis.LabSafeQuiz || (typeof module === 'object' && module?.exports ? require('./quiz.js') : null);
+
   const ALLOWED_HOST = 'labsafe.lzjtu.edu.cn';
   const ALLOWED_PATH = '/lab-study-front/';
   const NEXT_PATTERN = /下一节|继续学习|下一课/;
@@ -564,6 +566,16 @@
       this.playerMode = false;
       this.articleMode = false;
       this.catalogMode = false;
+      this.practiceMode = false;
+      this.practiceTimer = null;
+      this.practiceBusy = false;
+      this.practiceRetries = 0;
+      this.practicePendingQuestion = null;
+      this.practicePendingSince = 0;
+      this.practiceBankPendingName = null;
+      this.practiceBankPendingSince = 0;
+      this.practiceClosingModalSince = 0;
+      this.practiceReturningBankSince = 0;
       this.autoFlow = false;
       this.autoContext = null;
       this.autoRouteKey = '';
@@ -603,7 +615,7 @@
         state: this.state,
         rate: this.rate,
         reason: this.reason,
-        ...(this.catalogMode ? { mode: 'catalog' } : this.articleMode ? { mode: 'article' } : this.playerMode ? { mode: 'video' } : {}),
+        ...(this.practiceMode ? { mode: 'practice' } : this.catalogMode ? { mode: 'catalog' } : this.articleMode ? { mode: 'article' } : this.playerMode ? { mode: 'video' } : {}),
         ...(this.playerMode || this.articleMode ? { learnedSeconds: this.learnedSeconds, requiredSeconds: this.requiredSeconds } : {}),
       };
     }
@@ -624,6 +636,8 @@
 
     _routeKind(href = this.window?.location?.href) {
       if (!isAllowedUrl(href)) return null;
+      if (Quiz?.isPracticeUrl(href)) return 'practice';
+      if (Quiz?.isBankUrl(href) || this._hasPracticeBankModal()) return 'practiceBank';
       if (isVideoStudyUrl(href)) return 'video';
       if (isArticleStudyUrl(href)) return 'article';
       if (isCatalogUrl(href) || hasCatalogHeader(this.document)) return 'catalog';
@@ -642,6 +656,7 @@
       this._clearRouteRetry();
       this._clearPlayerProbe();
       this._clearReturnControlRetry();
+      this._clearPracticeTimer();
       try {
         this.document?.documentElement?.setAttribute?.('data-labsafe-attention', String(reason).slice(0, 120));
       } catch { /* 诊断标记失败不影响主流程 */ }
@@ -718,6 +733,7 @@
       this._clearRouteRetry();
       this._clearPlayerProbe();
       this._clearReturnControlRetry();
+      this._clearPracticeTimer();
       if (this.catalogMode && this.catalogWait) {
         this.pausedCatalogWait = { ...this.catalogWait };
         this._clearCatalogWait();
@@ -732,6 +748,10 @@
     resume() {
       if (this.state !== 'paused') return this.status();
       if (!this._allowedNow()) return this._setAttention('当前页面不在允许的学习页面范围内。');
+      if (this.autoFlow && ['practice', 'practiceBank'].includes(this._routeKind())) {
+        this.state = 'running';
+        return this._continueAutoRoute();
+      }
       if (this.autoFlow && this.catalogMode) {
         this.state = 'running';
         const pausedWait = this.pausedCatalogWait;
@@ -781,6 +801,7 @@
       this._clearRouteRetry();
       this._clearPlayerProbe();
       this._clearReturnControlRetry();
+      this._clearPracticeTimer();
       if (markStopped) {
         this.autoFlow = false;
         this.autoContext = null;
@@ -850,6 +871,7 @@
         this.routeRetries = 0;
       }
       if (routeKind === 'video' || routeKind === 'article') {
+        this.practiceMode = false;
         const periodId = this._currentPeriodId();
         if (periodId && this.autoContext.completedPeriodIds.has(String(periodId))) {
           this.autoRouteKey = routeKey;
@@ -886,6 +908,7 @@
         return this.status();
       }
       if (routeKind === 'catalog') {
+        this.practiceMode = false;
         if (this.catalogMode && this.autoRouteKey === routeKey && this.state === 'paused') return this.resume();
         if (this.catalogMode && this.autoRouteKey === routeKey && this.state === 'running') return this._continueCatalog();
         this._stopProgressMonitor();
@@ -902,6 +925,7 @@
         return this._continueCatalog();
       }
       if (routeKind === 'entry') {
+        this.practiceMode = false;
         this._stopProgressMonitor();
         this._detachVideo();
         this.playerMode = false;
@@ -913,6 +937,19 @@
         this.autoRouteKey = routeKey;
         this._watchPage();
         return this._continueEntry();
+      }
+      if (routeKind === 'practice' || routeKind === 'practiceBank') {
+        this._stopProgressMonitor();
+        this._detachVideo();
+        this.playerMode = false;
+        this.articleMode = false;
+        this.catalogMode = false;
+        this.practiceMode = true;
+        this.state = 'running';
+        this.reason = '';
+        this.autoRouteKey = routeKey;
+        this._watchPage();
+        return routeKind === 'practice' ? this._continuePractice() : this._continuePracticeBank();
       }
       this.autoRouteKey = routeKey;
       this.state = 'running';
@@ -926,6 +963,192 @@
         cancel.call(this.window, this.routeRetryTimer);
       }
       this.routeRetryTimer = null;
+    }
+
+    _clearPracticeTimer() {
+      if (this.practiceTimer !== null) {
+        const cancel = this.window?.clearTimeout || globalThis.clearTimeout;
+        cancel.call(this.window, this.practiceTimer);
+      }
+      this.practiceTimer = null;
+    }
+
+    _schedulePractice(delay = 1000) {
+      if (this.practiceTimer !== null) return this.status();
+      const schedule = this.window?.setTimeout || globalThis.setTimeout;
+      this.practiceTimer = schedule.call(this.window, () => {
+        this.practiceTimer = null;
+        if (this.autoFlow && this.state === 'running') this._continueAutoRoute();
+      }, delay);
+      return this.status();
+    }
+
+    _hasPracticeBankModal() {
+      if (!Quiz || !this.document?.querySelectorAll) return false;
+      return Array.from(this.document.querySelectorAll('.ivu-modal, .el-dialog'))
+        .some((modal) => Quiz.visible(modal, this.window) && /可练习题库/.test(String(modal.innerText ?? modal.textContent)));
+    }
+
+    _practiceBankCandidates() {
+      const roots = Array.from(this.document?.querySelectorAll?.('.ivu-modal, .el-dialog') || [])
+        .filter((modal) => Quiz.visible(modal, this.window) && /可练习题库/.test(String(modal.innerText ?? modal.textContent)));
+      if (roots.length > 1) return [];
+      const root = roots[0] || this.document;
+      const nodes = Array.from(root.querySelectorAll?.('li, a, button, [role="button"], div, span') || []);
+      return nodes.filter((node) => {
+        const label = Quiz.clean(node.innerText ?? node.textContent);
+        if (!/^\d+[.．、]\s*[^\s]{2,40}题库$/.test(label)) return false;
+        if (!Quiz.visible(node, this.window)) return false;
+        return !Array.from(node.querySelectorAll?.('li, a, button, [role="button"], div, span') || [])
+          .some((child) => Quiz.clean(child.innerText ?? child.textContent) === label);
+      });
+    }
+
+    async _continuePracticeBank() {
+      if (!this.autoFlow || this.state !== 'running' || this.practiceBusy) return this.status();
+      this.practiceBusy = true;
+      try {
+        const modal = this._hasPracticeBankModal();
+        const candidates = this._practiceBankCandidates();
+        if (this.practiceClosingModalSince && modal) {
+          if (Date.now() - this.practiceClosingModalSince > 12000) return this._setAttention('关闭题库弹窗后页面没有变化。');
+          return this._schedulePractice(1000);
+        }
+        if (this.practiceReturningBankSince && Quiz.isBankUrl(this.window?.location?.href)) {
+          if (Date.now() - this.practiceReturningBankSince > 12000) return this._setAttention('从题库卡片返回后页面没有变化。');
+          return this._schedulePractice(1000);
+        }
+        if (modal && candidates.length) {
+          const storage = globalThis.chrome?.storage?.local;
+          if (!storage) return this._setAttention('无法访问本地题库记录，已停止。');
+          const saved = await storage.get(Quiz.BANK_KEY);
+          const visited = Array.isArray(saved[Quiz.BANK_KEY]) ? saved[Quiz.BANK_KEY] : [];
+          if (this.practiceBankPendingName) {
+            if (Date.now() - this.practiceBankPendingSince > 12000) return this._setAttention('点击题库后页面没有进入练习，已停止避免跳过题库。');
+            return this._schedulePractice(1000);
+          }
+          const next = candidates.find((node) => !visited.includes(Quiz.clean(node.innerText ?? node.textContent))) || candidates[0];
+          const name = Quiz.clean(next.innerText ?? next.textContent);
+          if (visited.includes(name)) {
+            const close = Array.from(this.document.querySelectorAll('.ivu-modal-close, .el-dialog__headerbtn'))
+              .filter((node) => Quiz.visible(node, this.window));
+            if (close.length !== 1) return this._setAttention('本轮题库均已练习，但无法安全返回课程列表核对时长。');
+            await storage.set({ [Quiz.BANK_KEY]: [] });
+            this.practiceClosingModalSince = Date.now();
+            close[0].click();
+            return this._schedulePractice(1200);
+          }
+          await storage.set({ [Quiz.BANK_KEY]: [...visited, name], labsafeActivePracticeBankV1: name });
+          if (this.state !== 'running') return this.status();
+          this.practiceBankPendingName = name;
+          this.practiceBankPendingSince = Date.now();
+          next.click();
+          return this._schedulePractice(1200);
+        }
+        if (Quiz.isBankUrl(this.window?.location?.href)) {
+          const cards = Quiz.bankCards(this.document, this.window);
+          if (cards.length) {
+            if (new Set(cards.map((card) => card.name)).size !== cards.length) {
+              return this._setAttention('题库卡片名称无法唯一对应“在线练习”按钮。');
+            }
+            const storage = globalThis.chrome?.storage?.local;
+            if (!storage) return this._setAttention('无法访问本地题库记录，已停止。');
+            const saved = await storage.get(Quiz.BANK_KEY);
+            const visited = Array.isArray(saved[Quiz.BANK_KEY]) ? saved[Quiz.BANK_KEY] : [];
+            const next = cards.find((card) => !visited.includes(card.name));
+            if (!next) {
+              const backs = Quiz.exactControls(this.document, '返回', this.window);
+              if (backs.length !== 1) return this._setAttention('本轮题库均已练习，但无法安全返回课程列表核对时长。');
+              await storage.set({ [Quiz.BANK_KEY]: [] });
+              this.practiceReturningBankSince = Date.now();
+              backs[0].click();
+              return this._schedulePractice(1200);
+            }
+            await storage.set({ [Quiz.BANK_KEY]: [...visited, next.name], labsafeActivePracticeBankV1: next.name });
+            next.control.click();
+            return this._schedulePractice(1200);
+          }
+        }
+        this.practiceRetries += 1;
+        if (this.practiceRetries >= 30) return this._setAttention('题库选择控件长时间未出现或无法唯一确认。');
+        return this._schedulePractice(1000);
+      } catch {
+        return this._setAttention('题库选择失败，请检查页面。');
+      } finally {
+        this.practiceBusy = false;
+      }
+    }
+
+    async _continuePractice() {
+      if (!this.autoFlow || this.state !== 'running' || this.practiceBusy || !Quiz?.isPracticeUrl(this.window?.location?.href)) return this.status();
+      this.practiceBusy = true;
+      try {
+        this.practiceBankPendingName = null;
+        const dialogState = this._dismissBlockingDialog();
+        if (dialogState === 'dismissed') return this._schedulePractice(1000);
+        if (dialogState === 'blocked') return this._setAttention('练习页出现未知弹窗，请手动检查。');
+        const storage = globalThis.chrome?.storage?.local;
+        if (!storage) return this._setAttention('无法访问本地题库记录，已停止。');
+        const questions = Quiz.questionContainers(this.document, this.window);
+        if (!questions.length) {
+          this.practiceRetries += 1;
+          if (this.practiceRetries >= 30) return this._setAttention('练习题目长时间未加载或结构无法识别。');
+          return this._schedulePractice(1000);
+        }
+        this.practiceRetries = 0;
+        const saved = await storage.get([Quiz.STORAGE_KEY, 'labsafeActivePracticeBankV1']);
+        const records = saved[Quiz.STORAGE_KEY] && typeof saved[Quiz.STORAGE_KEY] === 'object' ? saved[Quiz.STORAGE_KEY] : {};
+        const bankId = new URL(this.window.location.href).pathname.split('/').filter(Boolean).at(-1);
+        const bank = saved.labsafeActivePracticeBankV1 || bankId;
+        for (const question of questions) {
+          const key = Quiz.questionKey(bankId, question.stem);
+          if (question.correct) {
+            if (this.practicePendingQuestion === key) this.practicePendingQuestion = null;
+            const previous = records[key];
+            if (!previous || JSON.stringify(previous.correct) !== JSON.stringify(question.correct)) {
+              records[key] = { bankId, bank, kind: question.kind, stem: question.stem, options: question.options, correct: question.correct, capturedAt: new Date().toISOString() };
+              await storage.set({ [Quiz.STORAGE_KEY]: records });
+              this._markStep('practice-recorded');
+            }
+            continue;
+          }
+          const action = Quiz.questionAction(question, records[key], this.window);
+          if (!action) return this._setAttention('练习题的选项或提交按钮无法唯一确认。');
+          if (this.practicePendingQuestion === key) {
+            if (Date.now() - this.practicePendingSince > 15000) return this._setAttention('作答后长时间未显示正确答案，已停止避免重复提交。');
+            return this._schedulePractice(1000);
+          }
+          if (this.state !== 'running') return this.status();
+          this.practicePendingQuestion = key;
+          this.practicePendingSince = Date.now();
+          for (const control of action.controls) control.click();
+          if (action.submit) action.submit.click();
+          this._markStep('practice-answered');
+          return this._schedulePractice(1200);
+        }
+        const signature = questions.map((question) => question.stem).join('|');
+        const nextControls = Quiz.exactControls(this.document, '下一页', this.window);
+        if (nextControls.length > 1) return this._setAttention('练习页存在多个可用的“下一页”控件，已停止避免误点。');
+        const next = nextControls[0];
+        if (next) {
+          if (this.practicePageSignature === signature) this.practicePageRetries = (this.practicePageRetries || 0) + 1;
+          else { this.practicePageSignature = signature; this.practicePageRetries = 0; }
+          if (this.practicePageRetries >= 5) return this._setAttention('点击练习下一页后题目没有变化，已停止避免循环。');
+          next.click();
+          return this._schedulePractice(1500);
+        }
+        const exits = Quiz.exactControls(this.document, '退出', this.window);
+        if (exits.length !== 1) return this._setAttention('本页题目已采集，但无法确认下一页或退出控件。');
+        if (this.practiceExitSignature === signature) this.practiceExitRetries = (this.practiceExitRetries || 0) + 1;
+        else { this.practiceExitSignature = signature; this.practiceExitRetries = 0; }
+        if (this.practiceExitRetries >= 5) return this._setAttention('点击练习退出后页面没有切换，已停止避免循环。');
+        exits[0].click();
+        return this._schedulePractice(1500);
+      } catch {
+        return this._setAttention('自动练习发生异常，已停止。');
+      } finally {
+        this.practiceBusy = false;
+      }
     }
 
     _scheduleRouteRetry() {
@@ -1252,7 +1475,7 @@
       const tick = () => {
         if (!this.catalogWait || !this.autoFlow || this.state !== 'running') return;
         const href = this.window?.location?.href || '';
-        if (href !== originHref && this._routeKind(href)) {
+        if ((href !== originHref || this._hasPracticeBankModal()) && this._routeKind(href)) {
           this._clearCatalogWait();
           this.catalogSelecting = false;
           this._continueAutoRoute();
@@ -1687,7 +1910,7 @@
           this._continueAutoRoute();
           return;
         }
-        if (this._routeKind(href) === 'article') return;
+        if (['article', 'practice', 'practiceBank'].includes(this._routeKind(href))) return;
       }
       if (!['running', 'paused'].includes(this.state)) return;
       if (!this._allowedNow()) return this._setAttention('当前页面不在允许的学习页面范围内。');

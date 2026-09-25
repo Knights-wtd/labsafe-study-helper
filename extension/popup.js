@@ -4,7 +4,7 @@
   const ALLOWED_HOST = 'labsafe.lzjtu.edu.cn';
   const ALLOWED_PATH = '/lab-study-front/';
   const RATE_KEY = 'studyRate';
-  const buttonIds = ['start', 'pause', 'resume', 'stop', 'export'];
+  const buttonIds = ['start', 'pause', 'resume', 'stop', 'export', 'exportQuiz'];
   const rateInput = document.getElementById('rate');
   const statusOutput = document.getElementById('status');
   const errorOutput = document.getElementById('error');
@@ -109,7 +109,7 @@
 
   async function inject(tabId) {
     try {
-      await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+      await chrome.scripting.executeScript({ target: { tabId }, files: ['quiz.js', 'content.js'] });
     } catch {
       throw new Error('无法在当前页面启动学习助手，请确认这是允许的学习页面后重试。');
     }
@@ -148,7 +148,7 @@
 
   async function startOnTab(tab, rate) {
     try {
-      await chrome.storage.local.set({ [RATE_KEY]: rate });
+      await chrome.storage.local.set({ [RATE_KEY]: rate, labsafePracticeBanksV1: [] });
     } catch {
       throw new Error('无法保存倍速设置。');
     }
@@ -219,6 +219,31 @@
     });
   }
 
+  async function exportQuiz() {
+    setBusy(true);
+    clearError();
+    try {
+      const saved = await chrome.storage.local.get('labsafePracticeQuestionsV1');
+      const records = Object.values(saved.labsafePracticeQuestionsV1 || {});
+      if (!records.length) throw new Error('还没有采集到练习题。');
+      const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), questions: records }, null, 2)], { type: 'application/json' });
+      const objectUrl = URL.createObjectURL(blob);
+      try {
+        const anchor = document.createElement('a');
+        anchor.href = objectUrl;
+        anchor.download = `labsafe-practice-questions-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+        anchor.click();
+      } finally {
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      }
+      statusOutput.textContent = `已导出 ${records.length} 道练习题`;
+    } catch (error) {
+      showError(error?.message || '导出题库失败。');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function refreshStatus() {
     const version = actionVersion;
     statusOutput.textContent = '正在读取页面状态…';
@@ -278,6 +303,7 @@
     return response;
   }));
   document.getElementById('export').addEventListener('click', exportDiagnosis);
+  document.getElementById('exportQuiz').addEventListener('click', exportQuiz);
 
   rateInput.addEventListener('change', async () => {
     clearError();

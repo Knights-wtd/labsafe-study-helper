@@ -94,7 +94,7 @@ featureTest('same-tab allowed navigation reinjects and resumes from session stat
   await chrome.tabs.onUpdated.emit(7, { status: 'complete', url: tab.url }, { ...tab });
 
   assert.equal(injected.length, 1);
-  assert.deepEqual(injected[0], { target: { tabId: 7 }, files: ['content.js'] });
+  assert.deepEqual(injected[0], { target: { tabId: 7 }, files: ['quiz.js', 'content.js'] });
   assert.equal(sent.length, 1);
   assert.deepEqual(sent[0], {
     tabId: 7,
