@@ -318,7 +318,7 @@
       const title = getCatalogCellText(cells[indexes[0]]);
       const module = getCatalogCellText(cells[indexes[1]]);
       const rowText = normalizeCatalogText(row.innerText ?? row.textContent);
-      if (!title || !module || !/(?:^|\s)(?:必学|选学)(?:\s|$)/.test(rowText)) continue;
+      if (!title || !module) continue;
 
       const progressMatches = [...rowText.matchAll(/已学习\s*[:：]\s*(\d+:[0-5]?\d:[0-5]?\d)\s*[/／]\s*(\d+:[0-5]?\d:[0-5]?\d)/g)];
       const learnedLabels = [...rowText.matchAll(/已学习/g)];

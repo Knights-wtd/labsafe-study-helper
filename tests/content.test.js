@@ -185,17 +185,18 @@ function splitCatalogFixture(rows, options = {}) {
 }
 
 function catalogRow(title, module, progress, options = {}) {
+  const tag = options.tag === undefined ? '必学' : options.tag;
   const button = options.button || new CatalogElement('button', options.action || '去学习', {
     disabled: options.disabled,
     attrs: options.buttonAttrs,
     style: options.buttonStyle,
   });
   const cells = [title, module, progress].map((label) => new CatalogElement('td', label));
-  cells.push(new CatalogElement('td', options.tag || '必学', {
+  cells.push(new CatalogElement('td', tag, {
     childrenBySelector: { 'button, a, [role="button"]': options.buttons || [button] },
   }));
   for (const control of options.buttons || [button]) control.parentElement = cells[3];
-  const row = new CatalogElement('tr', `${title} ${module} ${progress} ${options.tag || '必学'}`, {
+  const row = new CatalogElement('tr', `${tag} ${title} ${module} ${progress}`, {
     hidden: options.hidden,
     style: options.style,
     childrenBySelector: {
@@ -1529,9 +1530,9 @@ test('chooseCourseRow picks the first eligible row and skips completed session k
   assert.equal(chooseCourseRow(document, null, new Set([firstKey, readCatalogRows(document)[1].courseKey])), null);
 });
 
-test('chooseCourseRow continues from required courses to optional courses', () => {
+test('chooseCourseRow continues from required courses to optional rows without a type tag', () => {
   const required = catalogRow('必修课程', '模块甲', '已学习：00:00:00 / 00:08:00');
-  const optional = catalogRow('选修课程', '模块乙', '已学习：00:00:00 / 00:08:00', { tag: '选学' });
+  const optional = catalogRow('中华人民共和国环境保护法（2014修正）', '法律法规', '已学习：00:00:00 / 00:02:00', { tag: '' });
   const { document } = catalogFixture([required.row, optional.row]);
   const requiredKey = readCatalogRows(document)[0].courseKey;
   assert.equal(chooseCourseRow(document).row, required.row);
