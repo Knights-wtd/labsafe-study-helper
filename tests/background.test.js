@@ -225,6 +225,23 @@ featureTest('catalog duration creates a persistent practice time checkpoint and 
   assert.ok(second.session.practiceCheckAt <= Date.now() + 300000);
 });
 
+featureTest('a transient tab lookup failure on allowed navigation preserves the session for the next resume', async () => {
+  const { chrome, data, injected } = makeChrome([{ id: 7, url: courseUrl }]);
+  createBackground(chrome);
+  await send(chrome, { type: 'FLOW_START', tabId: 7, rate: 1 });
+  const originalGet = chrome.tabs.get;
+  chrome.tabs.get = async () => { throw new Error('tab is navigating'); };
+  await chrome.tabs.onUpdated.emit(7, {
+    status: 'complete', url: 'https://labsafe.lzjtu.edu.cn/lab-study-front/examTask/75',
+  }, { id: 7 });
+  assert.ok(data.labsafeSessions['7']);
+  chrome.tabs.get = originalGet;
+  await chrome.tabs.onUpdated.emit(7, {
+    status: 'complete', url: 'https://labsafe.lzjtu.edu.cn/lab-study-front/examTask/75',
+  }, { id: 7 });
+  assert.equal(injected.length, 1);
+});
+
 featureTest('COURSE_PICKED uses the trusted sender URL during a transient tab lookup failure', async () => {
   const { chrome, data } = makeChrome([{ id: 7, url: courseUrl }]);
   createBackground(chrome);
@@ -239,6 +256,20 @@ featureTest('COURSE_PICKED uses the trusted sender URL during a transient tab lo
     { tab: { id: 7 }, url: 'https://example.com/', frameId: 0 });
   assert.deepEqual(rejected, { ok: false, reason: 'tab-not-allowed' });
   assert.equal(data.labsafeSessions['7'].pendingKey, 'course-ab12');
+});
+
+featureTest('all course checkpoints use the sender page when tab lookup is temporarily unavailable', async () => {
+  const { chrome, data } = makeChrome([{ id: 7, url: courseUrl }]);
+  createBackground(chrome);
+  await send(chrome, { type: 'FLOW_START', tabId: 7, rate: 1 });
+  chrome.tabs.get = async () => { throw new Error('tab is navigating'); };
+  const sender = { tab: { id: 7 }, url: courseUrl, frameId: 0 };
+  assert.equal((await send(chrome, { type: 'COURSE_PICKED', courseKey: 'course-ab12' }, sender)).ok, true);
+  assert.equal((await send(chrome, { type: 'MODULE_ENTERED', parentPeriodId: 'period-1', moduleKey: 'course-cd34' }, sender)).ok, true);
+  assert.equal((await send(chrome, { type: 'COURSE_COMPLETED', periodId: 'period-2' }, sender)).ok, true);
+  assert.equal((await send(chrome, { type: 'COURSE_DEFERRED', periodId: 'period-3' }, sender)).ok, true);
+  assert.equal((await send(chrome, { type: 'FLOW_COMPLETE' }, sender)).ok, true);
+  assert.equal(data.labsafeSessions['7'], undefined);
 });
 
 featureTest('COURSE_PICKED reports missing session without creating a new one', async () => {

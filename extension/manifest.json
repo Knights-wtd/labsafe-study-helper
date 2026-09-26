@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LabSafe 学习助手",
-  "version": "1.3.11",
+  "version": "1.3.12",
   "description": "在指定实验室安全学习页面控制视频倍速、自动续学并记录练习题答案。",
   "permissions": [
     "activeTab",

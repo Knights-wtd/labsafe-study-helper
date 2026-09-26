@@ -100,6 +100,12 @@
       }
     }
 
+    async function allowedContentSender(sender) {
+      if (!Number.isInteger(sender?.tab?.id)) return false;
+      if (sender.url !== undefined) return isAllowedUrl(sender.url) && (sender.frameId === undefined || sender.frameId === 0);
+      return Boolean(await allowedTab(sender.tab.id));
+    }
+
     async function bestEffortMessage(tabId, message) {
       try { return await chromeApi.tabs.sendMessage(tabId, message); } catch { return null; }
     }
@@ -110,10 +116,7 @@
         const session = await getSession(tabId);
         if (!session || session.phase !== 'running') return false;
         const tab = await allowedTab(tabId);
-        if (!tab) {
-          await clearSession(tabId);
-          return false;
-        }
+        if (!tab) return false;
         try {
           await chromeApi.scripting.executeScript({ target: { tabId }, files: ['quiz.js', 'content.js'] });
           await chromeApi.tabs.sendMessage(tabId, {
@@ -173,7 +176,6 @@
           const session = await getSession(tabId);
           if (!session) return { ok: true, session: null };
           if (!await allowedTab(tabId)) {
-            await clearSession(tabId);
             return { ok: false, session: null };
           }
           session.phase = 'running';
@@ -229,7 +231,7 @@
           const senderTabId = sender?.tab?.id;
           const parentPeriodId = String(message.parentPeriodId ?? '');
           const moduleKey = String(message.moduleKey ?? '');
-          if (!Number.isInteger(senderTabId) || !/^[\w-]{1,80}$/.test(parentPeriodId) || !/^course-[a-z0-9]{1,8}$/.test(moduleKey) || !await allowedTab(senderTabId)) return { ok: false };
+          if (!/^[\w-]{1,80}$/.test(parentPeriodId) || !/^course-[a-z0-9]{1,8}$/.test(moduleKey) || !await allowedContentSender(sender)) return { ok: false };
           const session = await getSession(senderTabId);
           if (!session || session.phase !== 'running') return { ok: false };
           if (session.moduleParentPeriodId !== parentPeriodId) session.visitedModuleKeys = [];
@@ -241,7 +243,7 @@
         case 'COURSE_COMPLETED': {
           const senderTabId = sender?.tab?.id;
           const periodId = message.periodId;
-          if (!Number.isInteger(senderTabId) || !/^[\w-]{1,80}$/.test(String(periodId ?? '')) || !await allowedTab(senderTabId)) return { ok: false };
+          if (!/^[\w-]{1,80}$/.test(String(periodId ?? '')) || !await allowedContentSender(sender)) return { ok: false };
           const session = await getSession(senderTabId);
           if (!session) return { ok: false };
           const normalizedPeriodId = String(periodId);
@@ -259,7 +261,7 @@
         case 'COURSE_DEFERRED': {
           const senderTabId = sender?.tab?.id;
           const periodId = message.periodId;
-          if (!Number.isInteger(senderTabId) || !/^[\w-]{1,80}$/.test(String(periodId ?? '')) || !await allowedTab(senderTabId)) return { ok: false };
+          if (!/^[\w-]{1,80}$/.test(String(periodId ?? '')) || !await allowedContentSender(sender)) return { ok: false };
           const session = await getSession(senderTabId);
           if (!session || session.phase !== 'running') return { ok: false };
           const normalizedPeriodId = String(periodId);
@@ -276,7 +278,7 @@
         }
         case 'FLOW_COMPLETE': {
           const senderTabId = sender?.tab?.id;
-          if (!Number.isInteger(senderTabId) || !await allowedTab(senderTabId)) return { ok: false };
+          if (!await allowedContentSender(sender)) return { ok: false };
           await clearSession(senderTabId);
           return { ok: true, session: null };
         }

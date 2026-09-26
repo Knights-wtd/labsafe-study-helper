@@ -5,6 +5,7 @@ const {
   isSafetyVideoUrl,
   isArticleStudyUrl,
   isCatalogUrl,
+  hasRecognizedCatalogTable,
   chooseVideo,
   chooseNext,
   chooseReturnHome,
@@ -1651,6 +1652,34 @@ test('readCatalogRows joins Element UI header and body tables and rejects ambigu
   duplicateHeader.className = 'el-table__header-wrapper';
   const ambiguous = splitCatalogFixture([first.row], { headerWrappers: [fixture.headerWrapper, duplicateHeader] });
   assert.deepEqual(readCatalogRows(ambiguous.document), []);
+});
+
+test('catalog ignores hidden duplicate table wrappers left by a previous page render', () => {
+  const course = catalogRow('下一门课程', '安全知识', '已学习：00:00:00 / 00:03:00');
+  const visible = splitCatalogFixture([course.row]);
+  const hiddenHeader = new CatalogElement('div', '', {
+    hidden: true,
+    childrenBySelector: { 'table, [role="table"], [role="grid"]': [visible.headerTable] },
+  });
+  hiddenHeader.className = 'ivu-table-header';
+  const hiddenBody = new CatalogElement('div', '', {
+    hidden: true,
+    childrenBySelector: { 'table, [role="table"], [role="grid"]': [visible.bodyTable] },
+  });
+  hiddenBody.className = 'ivu-table-body';
+  const fixture = splitCatalogFixture([course.row], {
+    headerWrappers: [visible.headerWrapper, hiddenHeader],
+    bodyWrappers: [visible.bodyWrapper, hiddenBody],
+  });
+  const view = fakeWindow(fixture.document);
+  view.location.href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/examTask/75';
+  assert.equal(hasRecognizedCatalogTable(fixture.document, view), true);
+  assert.equal(readCatalogRows(fixture.document, view).length, 1);
+  const catalog = new StudyController({ document: fixture.document, window: view }).diagnose().catalog;
+  assert.equal(catalog.headerWrapperCount, 2);
+  assert.equal(catalog.visibleHeaderWrapperCount, 1);
+  assert.equal(catalog.recognized, true);
+  assert.equal(catalog.eligibleRowCount, 1);
 });
 
 test('chooseCatalogNextPage only accepts one visible enabled next control inside pagination', () => {

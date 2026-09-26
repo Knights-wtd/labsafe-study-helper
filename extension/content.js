@@ -278,11 +278,11 @@
 
     let rows;
     let indexes;
-    const headerWrappers = Array.from(new Set(document.querySelectorAll(HEADER_WRAPPER_SELECTOR)));
-    const componentTables = Array.from(new Set(document.querySelectorAll('.el-table, .ivu-table')));
+    const headerWrappers = Array.from(new Set(document.querySelectorAll(HEADER_WRAPPER_SELECTOR))).filter((wrapper) => isVisible(wrapper, view));
+    const componentTables = Array.from(new Set(document.querySelectorAll('.el-table, .ivu-table'))).filter((table) => isVisible(table, view));
     if (headerWrappers.length > 0 || componentTables.length > 0) {
       const headerMatches = headerWrappers.map((wrapper) => {
-        const tables = Array.from(new Set(wrapper.querySelectorAll?.(TABLE_INNER_SELECTOR) || []));
+        const tables = Array.from(new Set(wrapper.querySelectorAll?.(TABLE_INNER_SELECTOR) || [])).filter((table) => isVisible(table, view));
         if (tables.length !== 1) return null;
         const header = headerIndexesFromRows(tableRows(tables[0]));
         return header ? { wrapper, indexes: header.indexes } : null;
@@ -293,14 +293,16 @@
         ? Array.from(container.querySelectorAll?.(BODY_WRAPPER_SELECTOR) || [])
         : Array.from(new Set(document.querySelectorAll(BODY_WRAPPER_SELECTOR)));
       const bodyTables = [];
-      for (const wrapper of bodyWrappers) {
-        for (const table of wrapper.querySelectorAll?.(TABLE_INNER_SELECTOR) || []) bodyTables.push(table);
+      for (const wrapper of bodyWrappers.filter((item) => isVisible(item, view))) {
+        for (const table of wrapper.querySelectorAll?.(TABLE_INNER_SELECTOR) || []) {
+          if (isVisible(table, view)) bodyTables.push(table);
+        }
       }
       if (bodyTables.length !== 1) return [];
       rows = tableRows(bodyTables[0]);
       indexes = headerMatches[0].indexes;
     } else {
-      const tables = Array.from(new Set(document.querySelectorAll(TABLE_INNER_SELECTOR)));
+      const tables = Array.from(new Set(document.querySelectorAll(TABLE_INNER_SELECTOR))).filter((table) => isVisible(table, view));
       const catalogTables = tables.map((table) => {
         const header = headerIndexesFromRows(tableRows(table));
         if (!header) return null;
@@ -393,31 +395,32 @@
       .map((element) => normalizeCatalogText(element.textContent));
   }
 
-  function hasRecognizedCatalogTable(document) {
+  function hasRecognizedCatalogTable(document, view) {
     if (!document?.querySelectorAll) return false;
-    const headerWrappers = Array.from(document.querySelectorAll(HEADER_WRAPPER_SELECTOR));
+    const headerWrappers = Array.from(document.querySelectorAll(HEADER_WRAPPER_SELECTOR)).filter((wrapper) => isVisible(wrapper, view));
     if (headerWrappers.length > 0) {
       const matchedHeaders = headerWrappers.filter((wrapper) =>
         Array.from(wrapper.querySelectorAll?.(TABLE_INNER_SELECTOR) || [])
-          .some((table) => headerIndexesFromRows(tableRows(table))));
+          .some((table) => isVisible(table, view) && headerIndexesFromRows(tableRows(table))));
       if (matchedHeaders.length !== 1) return false;
       const container = findTableContainer(matchedHeaders[0]);
       const bodyWrappers = container
         ? Array.from(container.querySelectorAll?.(BODY_WRAPPER_SELECTOR) || [])
         : Array.from(document.querySelectorAll(BODY_WRAPPER_SELECTOR));
-      const bodyTables = bodyWrappers.flatMap((wrapper) => Array.from(wrapper.querySelectorAll?.(TABLE_INNER_SELECTOR) || []));
+      const bodyTables = bodyWrappers.filter((wrapper) => isVisible(wrapper, view))
+        .flatMap((wrapper) => Array.from(wrapper.querySelectorAll?.(TABLE_INNER_SELECTOR) || []).filter((table) => isVisible(table, view)));
       if (bodyTables.length !== 1) return false;
       return tableRows(bodyTables[0]).some((row) =>
         Array.from(row.querySelectorAll?.('td, [role="cell"], [role="gridcell"]') || []).length > 0);
     }
-    const tables = Array.from(new Set(document.querySelectorAll(TABLE_INNER_SELECTOR)));
+    const tables = Array.from(new Set(document.querySelectorAll(TABLE_INNER_SELECTOR))).filter((table) => isVisible(table, view));
     const matches = tables.filter((table) => headerIndexesFromRows(tableRows(table)));
     return matches.length === 1;
   }
 
-  function hasCatalogHeader(document) {
+  function hasCatalogHeader(document, view) {
     if (!document?.querySelectorAll) return false;
-    const tables = Array.from(new Set(document.querySelectorAll(TABLE_INNER_SELECTOR)));
+    const tables = Array.from(new Set(document.querySelectorAll(TABLE_INNER_SELECTOR))).filter((table) => isVisible(table, view));
     return tables.filter((table) => headerIndexesFromRows(tableRows(table))).length === 1;
   }
 
@@ -655,7 +658,7 @@
       if (Quiz?.isBankUrl(href) || this._hasPracticeBankModal()) return 'practiceBank';
       if (isVideoStudyUrl(href)) return 'video';
       if (isArticleStudyUrl(href)) return 'article';
-      if (isCatalogUrl(href) || hasCatalogHeader(this.document)) return 'catalog';
+      if (isCatalogUrl(href) || hasCatalogHeader(this.document, this.window)) return 'catalog';
       if (isPersonUrl(href)) return 'entry';
       if (chooseVideo(this.document, this.window) && readStudyProgress(this.document) && this._videoReturnControl()) return 'video';
       if (readStudyProgress(this.document) && chooseArticleReturn(this.document, this.window)) return 'article';
@@ -1478,7 +1481,7 @@
           return this._setAttention('无法切换到“未学”筛选标签。');
         }
       }
-      if (!hasRecognizedCatalogTable(this.document)) {
+      if (!hasRecognizedCatalogTable(this.document, this.window)) {
         return this._deferCatalogRetry('目录表格长时间未出现，已停止自动选择。');
       }
       const currentPage = this._readCurrentPageNumber();
@@ -2180,11 +2183,32 @@
         try { parsedCount = Quiz.questionContainers(this.document, this.window).length; } catch { /* 仅报告结构计数 */ }
         practice = { groupCount, wrapperCount, parsedCount };
       }
+      let catalog = null;
+      if (isCatalogUrl(this.window?.location?.href)) {
+        const headers = Array.from(this.document.querySelectorAll?.(HEADER_WRAPPER_SELECTOR) || []);
+        const bodies = Array.from(this.document.querySelectorAll?.(BODY_WRAPPER_SELECTOR) || []);
+        catalog = {
+          headerWrapperCount: headers.length,
+          visibleHeaderWrapperCount: headers.filter((item) => isVisible(item, this.window)).length,
+          matchingHeaderCount: headers.filter((wrapper) => isVisible(wrapper, this.window) &&
+            Array.from(wrapper.querySelectorAll?.(TABLE_INNER_SELECTOR) || [])
+              .some((table) => isVisible(table, this.window) && headerIndexesFromRows(tableRows(table)))).length,
+          bodyWrapperCount: bodies.length,
+          visibleBodyWrapperCount: bodies.filter((item) => isVisible(item, this.window)).length,
+          visibleBodyRowCount: bodies.filter((item) => isVisible(item, this.window))
+            .flatMap((wrapper) => Array.from(wrapper.querySelectorAll?.(TABLE_INNER_SELECTOR) || []))
+            .filter((table) => isVisible(table, this.window))
+            .flatMap(tableRows).filter((row) => isVisible(row, this.window)).length,
+          recognized: hasRecognizedCatalogTable(this.document, this.window),
+          eligibleRowCount: readCatalogRows(this.document, this.window).length,
+        };
+      }
       return {
         state: this.state,
         rate: this.rate,
         ...(this.reason ? { reason: this.reason } : {}),
         ...(practice ? { practice } : {}),
+        ...(catalog ? { catalog } : {}),
         videoCount: videos.length,
         visibleVideoCount: videos.filter((video) => isVisible(video, this.window)).length,
         frameCount: frames.length,
