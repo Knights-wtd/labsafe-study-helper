@@ -640,6 +640,7 @@
       this.learnedSeconds = null;
       this.requiredSeconds = null;
       this.lastLearnedSeconds = null;
+      this.articleCounterAdvanced = false;
       this.stalledTicks = 0;
       this.progressMissTicks = 0;
     }
@@ -737,6 +738,7 @@
       this.learnedSeconds = null;
       this.requiredSeconds = null;
       this.lastLearnedSeconds = null;
+      this.articleCounterAdvanced = false;
       this.stalledTicks = 0;
       this.progressMissTicks = 0;
       this.returnControlRetries = 0;
@@ -1928,7 +1930,9 @@
     }
 
     _tryModuleSubcourse() {
-      if (!this.autoFlow || this.catalogWait || this.catalogSelecting) return false;
+      const parentId = this.autoContext?.moduleParentPeriodId;
+      if (!this.autoFlow || this.catalogWait || this.catalogSelecting ||
+        (parentId && this._currentPeriodId() !== parentId)) return false;
       const candidate = chooseModuleRow(this.document, this.window, this.moduleVisitedKeys);
       if (!candidate) return false;
       this.moduleVisitedKeys.add(candidate.key);
@@ -1971,13 +1975,16 @@
       const progress = readStudyProgress(this.document);
       if (!progress) {
         this.progressMissTicks = (this.progressMissTicks || 0) + 1;
-        if (this.progressMissTicks >= 15 && this._tryModuleSubcourse()) return;
+        if (this.progressMissTicks >= 15 && (!this.articleCounterAdvanced || this.autoContext?.moduleParentPeriodId === this._currentPeriodId()) && this._tryModuleSubcourse()) return;
         if (this.progressMissTicks >= 60) return this._setAttention('无法唯一读取页面可见的已学习与要求学习时间。');
         return;
       }
       this.progressMissTicks = 0;
       this.learnedSeconds = progress.learnedSeconds;
       this.requiredSeconds = progress.requiredSeconds;
+      if (this.lastLearnedSeconds !== null && progress.learnedSeconds > this.lastLearnedSeconds) {
+        this.articleCounterAdvanced = true;
+      }
       if (this.lastLearnedSeconds === null || progress.learnedSeconds > this.lastLearnedSeconds) {
         this.stalledTicks = 0;
       } else if (progress.learnedSeconds === this.lastLearnedSeconds) {
@@ -1997,7 +2004,9 @@
         this._completeCourseAndReturn(back, this._currentPeriodId() || 'article');
         return;
       }
-      if (this.stalledTicks >= 15 && this._tryModuleSubcourse()) return;
+      // A timer that has advanced belongs to a timed article. A later server
+      // delay must not turn its sidebar course list into module subcourses.
+      if (this.stalledTicks >= 15 && (!this.articleCounterAdvanced || this.autoContext?.moduleParentPeriodId === this._currentPeriodId()) && this._tryModuleSubcourse()) return;
       if (this.stalledTicks >= 60) return this._setAttention('学习计时未增长，已暂停自动操作，请检查页面是否仍在正常学习。');
     }
 
@@ -2270,6 +2279,17 @@
         state: this.state,
         rate: this.rate,
         ...(this.reason ? { reason: this.reason } : {}),
+        ...(this.articleMode ? { article: {
+          learnedSeconds: this.learnedSeconds,
+          requiredSeconds: this.requiredSeconds,
+          counterAdvanced: this.articleCounterAdvanced,
+          stalledTicks: this.stalledTicks,
+          progressMissTicks: this.progressMissTicks,
+          isModuleParent: Boolean(this.autoContext?.moduleParentPeriodId &&
+            this.autoContext.moduleParentPeriodId === this._currentPeriodId()),
+          isModuleChild: Boolean(this.autoContext?.moduleParentPeriodId &&
+            this.autoContext.moduleParentPeriodId !== this._currentPeriodId()),
+        } } : {}),
         ...(practice ? { practice } : {}),
         ...(catalog ? { catalog } : {}),
         videoCount: videos.length,

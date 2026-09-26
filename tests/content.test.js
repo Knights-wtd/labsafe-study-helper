@@ -1126,6 +1126,42 @@ test('a stalled module can enter a visible optional subcourse', async () => {
   assert.equal(optional.clickCount, 1);
 });
 
+test('a timed optional article never clicks sidebar courses after its timer stalls', async () => {
+  const sidebar = new CatalogElement('li', '选学 气瓶安全管理');
+  const body = { innerText: '已学习 00:00:01 要求学习 00:03:00' };
+  const document = {
+    querySelectorAll(selector) { return selector === 'li, tr' ? [sidebar] : []; },
+    body,
+    documentElement: {},
+  };
+  const view = fakeWindow(document);
+  view.location.href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/examTask/75/2/1/363';
+  const controller = new StudyController({ document, window: view, runtime: { sendMessage: async () => ({ ok: true }) } });
+  await controller.autoContinue({ rate: 1, moduleParentPeriodId: 'article-75-2-1-431' });
+  body.innerText = '已学习 00:00:02 要求学习 00:03:00';
+  view.runIntervals();
+  for (let index = 0; index < 20; index += 1) view.runIntervals();
+  assert.equal(sidebar.clickCount, 0);
+  assert.equal(controller.status().state, 'running');
+  assert.equal(controller.diagnose().article.isModuleChild, true);
+  assert.equal(controller.diagnose().article.counterAdvanced, true);
+});
+
+test('an optional article with a stalled initial timer does not enter another sidebar course', async () => {
+  const sidebar = new CatalogElement('li', '选学 气瓶安全管理');
+  const document = {
+    querySelectorAll(selector) { return selector === 'li, tr' ? [sidebar] : []; },
+    body: { innerText: '已学习 00:01:06 要求学习 00:03:00' },
+    documentElement: {},
+  };
+  const view = fakeWindow(document);
+  view.location.href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/examTask/75/2/1/363';
+  const controller = new StudyController({ document, window: view, runtime: { sendMessage: async () => ({ ok: true }) } });
+  await controller.autoContinue({ rate: 1, moduleParentPeriodId: 'article-75-2-1-431' });
+  for (let index = 0; index < 20; index += 1) view.runIntervals();
+  assert.equal(sidebar.clickCount, 0);
+});
+
 test('an article page whose timer keeps growing never clicks its course rows', async () => {
   const row1 = new CatalogElement('li', '必学 辐射安全');
   const bodyText = { innerText: '已学习 00:00:01 要求学习 03:31:00' };
