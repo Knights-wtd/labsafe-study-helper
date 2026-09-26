@@ -584,6 +584,7 @@
       this.reason = '';
       this.video = null;
       this.observer = null;
+      this.catalogMutationTimer = null;
       this.endedVideos = new WeakSet();
       this.rateAttempts = 0;
       this.handlers = null;
@@ -2069,19 +2070,22 @@
           if (dialogState === 'blocked') return this._setAttention('平台弹窗缺少可安全点击的确认按钮，请手动关闭后重新开始。');
           if (dialogState === 'dismissed') this.returnDialogDismissed = true;
         }
-        const routeKey = `${new URL(href).pathname}${new URL(href).search}`;
-        if (this._routeKind(href) === 'catalog') {
+        if (isCatalogUrl(href) || this._routeKind(href) === 'catalog') {
           this._clearReturnWait();
           if (this.state === 'completed' || this.state === 'switching') this.state = 'running';
-          if (this.catalogWait && this.catalogWait.previousSignature !== 'course-route' &&
-            this._catalogSignature() !== this.catalogWait.previousSignature) {
-            this._clearCatalogWait();
-            this._continueCatalog();
-          } else if (!this.catalogSelecting && !this.catalogWait && this.state === 'running') {
-            this._continueAutoRoute();
+          if (this.catalogMutationTimer === null) {
+            const schedule = this.window?.setTimeout || globalThis.setTimeout;
+            this.catalogMutationTimer = schedule.call(this.window, () => {
+              this.catalogMutationTimer = null;
+              if (this.autoFlow && this.state !== 'needsAttention' &&
+                (isCatalogUrl(this.window?.location?.href) || this._routeKind() === 'catalog')) {
+                this._checkCatalogMutation();
+              }
+            }, 100);
           }
           return;
         }
+        const routeKey = `${new URL(href).pathname}${new URL(href).search}`;
         if (routeKey !== this.autoRouteKey && isAllowedUrl(href)) {
           this._clearCatalogWait();
           this._clearReturnWait();
@@ -2100,6 +2104,18 @@
         return;
       }
       if (video !== this.video) this._bindVideo(video, this.state === 'running');
+    }
+
+    _checkCatalogMutation() {
+      this._clearReturnWait();
+      if (this.state === 'completed' || this.state === 'switching') this.state = 'running';
+      if (this.catalogWait && this.catalogWait.previousSignature !== 'course-route' &&
+        this._catalogSignature() !== this.catalogWait.previousSignature) {
+        this._clearCatalogWait();
+        this._continueCatalog();
+      } else if (!this.catalogSelecting && !this.catalogWait && this.state === 'running') {
+        this._continueAutoRoute();
+      }
     }
 
     _clearPlayerProbe() {
@@ -2192,6 +2208,11 @@
     _disconnectObserver() {
       this.observer?.disconnect();
       this.observer = null;
+      if (this.catalogMutationTimer !== null) {
+        const cancel = this.window?.clearTimeout || globalThis.clearTimeout;
+        cancel.call(this.window, this.catalogMutationTimer);
+        this.catalogMutationTimer = null;
+      }
     }
 
     diagnose() {

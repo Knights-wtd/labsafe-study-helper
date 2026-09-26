@@ -416,6 +416,7 @@ test('person to catalog to safety video to catalog completes the serial learning
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(back.clickCount, 1);
   controller._onMutation();
+  view.runTimers();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(controller.status().state, 'completed');
   assert.deepEqual(messages, ['COURSE_PICKED', 'COURSE_COMPLETED', 'FLOW_COMPLETE']);
@@ -691,6 +692,7 @@ test('SPA return from a completed article resumes catalog flow after FLOW_COMPLE
   view.document = catalog.document;
   view.location.href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/examTask/75';
   controller._onMutation();
+  view.runTimers();
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(messages, ['COURSE_COMPLETED', 'FLOW_COMPLETE']);
   assert.equal(controller.status().state, 'completed');
@@ -1717,6 +1719,7 @@ test('catalog does not clear the session while unfinished progress is visible bu
   const row = catalogRow('待加载课程', '安全知识', '已学习：00:00:00 / 00:03:00', { disabled: true });
   const fixture = catalogFixture([row.row]);
   markUnlearnedTabSelected(fixture.document);
+  fixture.document.documentElement = {};
   const view = fakeWindow(fixture.document);
   view.location.href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/examTask/75';
   const messages = [];
@@ -1728,6 +1731,24 @@ test('catalog does not clear the session while unfinished progress is visible bu
   assert.equal(row.button.clickCount, 0);
   assert.equal(view.timers.size, 1);
   assert.deepEqual(messages, []);
+});
+
+test('frequent catalog mutations do not rescan every course row for each change', async () => {
+  const row = catalogRow('缓慢加载的课程', '安全知识', '已学习：00:00:00 / 00:03:00', { disabled: true });
+  const fixture = catalogFixture([row.row]);
+  markUnlearnedTabSelected(fixture.document);
+  fixture.document.documentElement = {};
+  const view = fakeWindow(fixture.document);
+  view.location.href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/examTask/75';
+  const controller = new StudyController({ document: fixture.document, window: view,
+    runtime: { sendMessage: async () => ({ ok: true }) } });
+  await controller.autoContinue({ rate: 1 });
+  const original = fixture.document.querySelectorAll.bind(fixture.document);
+  let scans = 0;
+  fixture.document.querySelectorAll = (selector) => { scans += 1; return original(selector); };
+  for (let index = 0; index < 50; index += 1) view.observers[0].trigger();
+  assert.ok(scans <= 10, `50 unrelated changes caused ${scans} DOM scans`);
+  assert.equal(controller.status().state, 'running');
 });
 
 test('catalog ignores hidden duplicate table wrappers left by a previous page render', () => {
