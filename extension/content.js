@@ -614,6 +614,8 @@
       this.autoContext = null;
       this.autoRouteKey = '';
       this.autoAction = null;
+      this.recentRoutes = [];
+      this.lastObservedRouteKey = null;
       this.catalogVisitedPages = new Set();
       this.catalogTimer = null;
       this.catalogWait = null;
@@ -683,7 +685,7 @@
       return null;
     }
 
-    _setAttention(reason) {
+    _setAttention(reason, retryable = true) {
       if (this.state === 'needsAttention') return this.status();
       this.state = 'needsAttention';
       this.reason = reason;
@@ -701,14 +703,16 @@
       this.pausedCatalogWait = null;
       if (this.autoFlow && !this.attentionSent) {
         this.attentionSent = true;
-        this._sendBackground('FLOW_ATTENTION', { reason }).catch(() => {});
-        // The page timer backs up the background timer if the service worker goes idle.
-        const schedule = this.window?.setTimeout || globalThis.setTimeout;
-        schedule.call(this.window, () => {
-          if (this.autoFlow && this.state === 'needsAttention') {
-            this._sendBackground('FLOW_AUTO_RESTART').catch(() => {});
-          }
-        }, 5000);
+        this._sendBackground('FLOW_ATTENTION', { reason, retryable }).catch(() => {});
+        if (retryable) {
+          // The page timer backs up the background timer if the service worker goes idle.
+          const schedule = this.window?.setTimeout || globalThis.setTimeout;
+          schedule.call(this.window, () => {
+            if (this.autoFlow && this.state === 'needsAttention') {
+              this._sendBackground('FLOW_AUTO_RESTART').catch(() => {});
+            }
+          }, 5000);
+        }
       }
       this._stopProgressMonitor();
       this._cancelTransitionWait();
@@ -887,6 +891,10 @@
         this.completionPending = false;
         this.deferPending = false;
       }
+      if (this.autoContext?.runId !== (typeof message.runId === 'string' ? message.runId : null)) {
+        this.recentRoutes = [];
+        this.lastObservedRouteKey = null;
+      }
       this.autoFlow = true;
       this.attentionSent = false;
       this.autoContext = {
@@ -905,6 +913,16 @@
       return this._continueAutoRoute();
     }
 
+    _recordRouteChange(routeKey, routeKind, now = Date.now()) {
+      if (!routeKind || routeKey === this.lastObservedRouteKey) return false;
+      this.lastObservedRouteKey = routeKey;
+      this.recentRoutes = this.recentRoutes.filter((entry) => now - entry.at <= 10000);
+      this.recentRoutes.push({ at: now, kind: routeKind });
+      if (this.recentRoutes.length < 8) return false;
+      const kinds = new Set(this.recentRoutes.map((entry) => entry.kind));
+      return kinds.has('catalog') && [...kinds].some((kind) => kind === 'article' || kind === 'video' || kind === 'entry');
+    }
+
     async _continueAutoRoute() {
       if (!this.autoFlow || !['running', 'paused', 'idle'].includes(this.state)) return this.status();
       const href = this.window?.location?.href || '';
@@ -912,6 +930,13 @@
       if (this.autoAction) return this.status();
       const routeKey = new URL(href).pathname + new URL(href).search;
       const routeKind = this._routeKind(href);
+      if (this._recordRouteChange(routeKey, routeKind)) {
+        return this._setAttention('学习页面短时间内反复跳转，已暂停自动点击，请检查平台请求错误。', false);
+      }
+      if (routeKind === 'entry' && (this.autoContext.pendingKey ||
+        this.autoContext.completedKeys.size || this.autoContext.deferredKeys.size)) {
+        return this._setAttention('学习途中被平台送回个人中心，已暂停自动点击，请检查登录与平台提示。', false);
+      }
       if (routeKind !== 'entry') this._clearEntryRetry();
       if (routeKind) {
         this._clearRouteRetry();
@@ -2279,6 +2304,7 @@
         state: this.state,
         rate: this.rate,
         ...(this.reason ? { reason: this.reason } : {}),
+        routeChangesLast10s: this.recentRoutes.filter((entry) => Date.now() - entry.at <= 10000).length,
         ...(this.articleMode ? { article: {
           learnedSeconds: this.learnedSeconds,
           requiredSeconds: this.requiredSeconds,

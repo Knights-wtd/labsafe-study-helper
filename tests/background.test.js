@@ -416,6 +416,25 @@ featureTest('attention automatically restarts after five seconds without losing 
   assert.equal(sent.at(-1).message.type, 'AUTO_CONTINUE');
 });
 
+featureTest('route oscillation attention stays paused until the user resumes', async () => {
+  const { chrome } = makeChrome([{ id: 7, url: courseUrl }]);
+  const callbacks = new Map();
+  let nextId = 1;
+  createBackground(chrome, {
+    setTimeout(callback) { const id = nextId++; callbacks.set(id, callback); return id; },
+    clearTimeout(id) { callbacks.delete(id); },
+  });
+  const sender = { tab: { id: 7 }, url: courseUrl, frameId: 0 };
+  await send(chrome, { type: 'FLOW_START', tabId: 7, rate: 1, runId: 'run-original' });
+  const stopped = await send(chrome, { type: 'FLOW_ATTENTION', reason: 'rapid routes', retryable: false, runId: 'run-original' }, sender);
+  assert.equal(stopped.session.phase, 'paused');
+  assert.equal(stopped.session.autoRestartBlocked, true);
+  assert.equal(callbacks.size, 0);
+  assert.equal((await send(chrome, { type: 'FLOW_AUTO_RESTART', runId: 'run-original' }, sender)).ok, false);
+  await send(chrome, { type: 'FLOW_RESUME', tabId: 7 });
+  assert.equal((await send(chrome, { type: 'FLOW_GET', tabId: 7 })).session.autoRestartBlocked, undefined);
+});
+
 featureTest('manual pause cancels a scheduled automatic restart', async () => {
   const { chrome } = makeChrome([{ id: 7, url: courseUrl }]);
   const callbacks = new Map();

@@ -327,6 +327,34 @@ test('personal center opens a unique 去学习 entry and then continues in the c
   assert.equal(course.button.clickCount, 1);
 });
 
+test('an unexpected return to person after picking a course stops further entry clicks', async () => {
+  const entry = new FakeElement('button', '去学习');
+  const document = new FakeDocument([entry], '个人中心 去学习');
+  const view = fakeWindow(document);
+  view.location.href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/person';
+  const messages = [];
+  const controller = new StudyController({ document, window: view,
+    runtime: { sendMessage: async (message) => { messages.push(message); return { ok: true }; } } });
+  const status = await controller.autoContinue({ rate: 1, pendingKey: 'course-ab12' });
+  assert.equal(status.state, 'needsAttention');
+  assert.equal(entry.clickCount, 0);
+  assert.equal(messages[0].type, 'FLOW_ATTENTION');
+  assert.equal(messages[0].retryable, false);
+});
+
+test('rapid catalog and article route oscillation is detected without counting repeated checks on one route', () => {
+  const controller = new StudyController({ document: new FakeDocument(), window: fakeWindow(new FakeDocument()) });
+  assert.equal(controller._recordRouteChange('/lab-study-front/examTask/75', 'catalog', 1000), false);
+  for (let index = 0; index < 6; index += 1) {
+    assert.equal(controller._recordRouteChange('/lab-study-front/examTask/75', 'catalog', 1001 + index), false);
+  }
+  for (let index = 0; index < 6; index += 1) {
+    const path = index % 2 ? '/lab-study-front/examTask/75' : `/lab-study-front/examTask/75/4/1/${index + 1}`;
+    assert.equal(controller._recordRouteChange(path, index % 2 ? 'catalog' : 'article', 1100 + index * 100), false);
+  }
+  assert.equal(controller._recordRouteChange('/lab-study-front/examTask/75/4/1/99', 'article', 1800), true);
+});
+
 test('an allowed page with a unique video, study timer and 返回 is recognized without a fixed route', async () => {
   const video = new FakeElement('video');
   const back = new FakeElement('button', '返回');

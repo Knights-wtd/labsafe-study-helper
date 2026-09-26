@@ -59,6 +59,7 @@
       pendingKey: typeof value.pendingKey === 'string' ? value.pendingKey : null,
       autoRestartCount: Number.isSafeInteger(value.autoRestartCount) && value.autoRestartCount >= 0
         ? value.autoRestartCount : 0,
+      ...(value.autoRestartBlocked === true ? { autoRestartBlocked: true } : {}),
       ...(typeof value.attentionReason === 'string' && value.attentionReason
         ? { attentionReason: value.attentionReason.slice(0, 120) } : {}),
       ...(validRunId(value.runId) ? { runId: value.runId } : {}),
@@ -111,7 +112,8 @@
       const operation = (async () => {
       const session = await getSession(tabId);
       if (!session || session.phase !== 'paused' || session.runId !== runId ||
-        !session.attentionReason || session.autoRestartCount >= MAX_AUTO_RESTARTS_WITHOUT_PROGRESS) return false;
+        !session.attentionReason || session.autoRestartBlocked === true ||
+        session.autoRestartCount >= MAX_AUTO_RESTARTS_WITHOUT_PROGRESS) return false;
       cancelAutoRestart(tabId);
       session.autoRestartCount += 1;
       session.phase = 'running';
@@ -316,6 +318,7 @@
           session.phase = 'running';
           session.autoRestartCount = 0;
           delete session.attentionReason;
+          delete session.autoRestartBlocked;
           await putSession(session);
           await continueSession(tabId);
           return { ok: true, session };
@@ -433,9 +436,10 @@
           const reason = String(message.reason || '').slice(0, 120);
           session.phase = 'paused';
           session.attentionReason = reason;
+          if (message.retryable === false) session.autoRestartBlocked = true;
           await putSession(session);
           await recordSessionEvent(senderTabId, 'attention-paused', reason);
-          if (session.autoRestartCount < MAX_AUTO_RESTARTS_WITHOUT_PROGRESS) {
+          if (!session.autoRestartBlocked && session.autoRestartCount < MAX_AUTO_RESTARTS_WITHOUT_PROGRESS) {
             scheduleAutoRestart(senderTabId, session.runId);
           }
           return { ok: true, session };
