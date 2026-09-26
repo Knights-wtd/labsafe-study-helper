@@ -78,6 +78,27 @@
     }
     const restartTimers = new Map();
     const restartOperations = new Map();
+    let powerSync = Promise.resolve();
+    let powerHeld = false;
+
+    function syncKeepAwake() {
+      if (!chromeApi.power?.requestKeepAwake || !chromeApi.power?.releaseKeepAwake) return Promise.resolve();
+      powerSync = powerSync.catch(() => {}).then(async () => {
+        const sessions = await readSessions();
+        const running = Object.entries(sessions).some(([id, value]) => {
+          const session = normalizeSession(value, Number(id));
+          return session?.phase === 'running';
+        });
+        if (running && !powerHeld) {
+          chromeApi.power.requestKeepAwake('system');
+          powerHeld = true;
+        } else if (!running) {
+          chromeApi.power.releaseKeepAwake();
+          powerHeld = false;
+        }
+      });
+      return powerSync.catch(() => { powerHeld = false; });
+    }
 
     function cancelAutoRestart(tabId) {
       const timer = restartTimers.get(tabId);
@@ -163,6 +184,7 @@
       const recovery = await readRecoverySessions();
       recovery[String(session.tabId)] = session;
       await chromeApi.storage.session.set({ [RECOVERY_KEY]: recovery });
+      await syncKeepAwake();
       return session;
     }
 
@@ -175,6 +197,7 @@
       const recovery = await readRecoverySessions();
       delete recovery[String(tabId)];
       await chromeApi.storage.session.set({ [RECOVERY_KEY]: recovery });
+      await syncKeepAwake();
       await recordSessionEvent(tabId, reason);
     }
 
@@ -460,6 +483,8 @@
     chromeApi.tabs.onRemoved?.addListener((tabId) => {
       return clearSession(tabId, 'tab-closed').catch(() => {});
     });
+
+    syncKeepAwake().catch(() => {});
 
     return { continueSession, getSession };
   }

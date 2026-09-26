@@ -138,6 +138,46 @@ featureTest('tab removal and navigation off the allowed site clear the session',
   assert.equal(data.labsafeSessions['9'], undefined);
 });
 
+featureTest('keep-awake follows running study sessions across pause, resume, stop and multiple tabs', async () => {
+  const { chrome } = makeChrome([{ id: 7, url: courseUrl }, { id: 8, url: courseUrl }]);
+  const powerCalls = [];
+  chrome.power = {
+    requestKeepAwake(level) { powerCalls.push(`request:${level}`); },
+    releaseKeepAwake() { powerCalls.push('release'); },
+  };
+  createBackground(chrome);
+  await send(chrome, { type: 'FLOW_START', tabId: 7, rate: 1 });
+  assert.equal(powerCalls.at(-1), 'request:system');
+  await send(chrome, { type: 'FLOW_PAUSE', tabId: 7 });
+  assert.equal(powerCalls.at(-1), 'release');
+  await send(chrome, { type: 'FLOW_RESUME', tabId: 7 });
+  assert.equal(powerCalls.at(-1), 'request:system');
+  await send(chrome, { type: 'FLOW_START', tabId: 8, rate: 1 });
+  await send(chrome, { type: 'FLOW_STOP', tabId: 7 });
+  assert.equal(powerCalls.at(-1), 'request:system', 'the other running tab still needs power');
+  await send(chrome, { type: 'FLOW_STOP', tabId: 8 });
+  assert.equal(powerCalls.at(-1), 'release');
+});
+
+featureTest('keep-awake is restored when the background worker restarts during a running session', async () => {
+  const { chrome, data } = makeChrome([{ id: 7, url: courseUrl }]);
+  data.labsafeSessions = { '7': {
+    tabId: 7, rate: 1, phase: 'running', completedKeys: [], completedPeriodIds: [],
+    deferredKeys: [], deferredPeriodIds: [], pendingKey: null,
+  } };
+  const calls = [];
+  chrome.power = {
+    requestKeepAwake(level) { calls.push(`request:${level}`); },
+    releaseKeepAwake() { calls.push('release'); },
+  };
+  createBackground(chrome);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.at(-1), 'request:system');
+  await send(chrome, { type: 'FLOW_ATTENTION', reason: 'page issue' },
+    { tab: { id: 7 }, url: courseUrl, frameId: 0 });
+  assert.equal(calls.at(-1), 'release');
+});
+
 featureTest('intermediate navigation outside the learning path does not discard a returning session', async () => {
   const { chrome, tabs, data } = makeChrome([{ id: 7, url: courseUrl }]);
   createBackground(chrome);
