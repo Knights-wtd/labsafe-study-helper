@@ -1504,12 +1504,33 @@
       if (row) {
         this._markStep(`row:${row.courseKey}`);
         const operation = (async () => {
-          const ack = await this._sendBackground('COURSE_PICKED', {
-            courseKey: row.courseKey,
-            learnedSeconds: row.learnedSeconds,
-            requiredSeconds: row.requiredSeconds,
-          });
-          if (!ack?.ok) return this._setAttention('后台未确认课程选择，已停止自动操作。');
+          let ack = null;
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            ack = await this._sendBackground('COURSE_PICKED', {
+              courseKey: row.courseKey,
+              learnedSeconds: row.learnedSeconds,
+              requiredSeconds: row.requiredSeconds,
+            });
+            if (ack?.ok || (ack && ack.reason !== 'tab-unavailable')) break;
+            if (attempt < 2) {
+              this._markStep(`course-pick-retry:${attempt + 1}`);
+              await new Promise((resolve) => {
+                const schedule = this.window?.setTimeout || globalThis.setTimeout;
+                schedule.call(this.window, resolve, 750);
+              });
+              if (this.state !== 'running' || !this.autoFlow || this._routeKind() !== 'catalog') return this.status();
+            }
+          }
+          if (!ack?.ok) {
+            const detail = {
+              'session-missing': '后台学习会话已丢失，请重新点击“开始学习”。',
+              'session-paused': '后台学习会话已暂停，请点击“继续”。',
+              'tab-not-allowed': '后台识别到页面已离开学习站点，已停止自动操作。',
+              'invalid-request': '课程标识未通过后台校验，已停止自动操作。',
+              'tab-unavailable': '后台暂时无法确认当前标签页，重试后仍失败。',
+            }[ack?.reason] || '后台未确认课程选择，重试后仍失败。';
+            return this._setAttention(detail);
+          }
           if (this.state !== 'running') return this.status();
           this.autoContext.pendingKey = row.courseKey;
           this.autoContext.practiceCheckAt = ack.session?.practiceCheckAt || null;

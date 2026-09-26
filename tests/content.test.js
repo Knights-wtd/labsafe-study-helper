@@ -516,6 +516,45 @@ test('AUTO_CONTINUE fails closed when COURSE_PICKED is rejected and does not cli
   assert.equal(row.button.clickCount, 0);
 });
 
+test('catalog waits for a transient COURSE_PICKED rejection, then clicks only after acknowledgement', async () => {
+  const row = catalogRow('课程甲', '微课堂', '已学习：00:01:00 / 00:08:00');
+  const fixture = catalogFixture([row.row]);
+  const { activePage } = markUnlearnedTabSelected(fixture.document);
+  attachCatalogPager(fixture.document, activePage);
+  const view = fakeWindow(fixture.document);
+  view.location.href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/examTask/75';
+  let attempts = 0;
+  const controller = new StudyController({ document: fixture.document, window: view, runtime: {
+    sendMessage: async () => (++attempts === 1 ? { ok: false, reason: 'tab-unavailable' } : { ok: true, session: {} }),
+  } });
+  const continuing = controller.autoContinue({ rate: 1 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(row.button.clickCount, 0);
+  assert.equal(view.timers.size, 1);
+  view.runTimers();
+  assert.equal((await continuing).state, 'running');
+  assert.equal(attempts, 2);
+  assert.equal(row.button.clickCount, 1);
+});
+
+test('catalog does not retry when COURSE_PICKED reports a missing session', async () => {
+  const row = catalogRow('课程甲', '微课堂', '已学习：00:01:00 / 00:08:00');
+  const fixture = catalogFixture([row.row]);
+  const { activePage } = markUnlearnedTabSelected(fixture.document);
+  attachCatalogPager(fixture.document, activePage);
+  const view = fakeWindow(fixture.document);
+  view.location.href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/examTask/75';
+  let attempts = 0;
+  const controller = new StudyController({ document: fixture.document, window: view, runtime: {
+    sendMessage: async () => { attempts += 1; return { ok: false, reason: 'session-missing' }; },
+  } });
+  const status = await controller.autoContinue({ rate: 1 });
+  assert.equal(status.state, 'needsAttention');
+  assert.match(status.reason, /会话已丢失/);
+  assert.equal(attempts, 2); // COURSE_PICKED followed by FLOW_ATTENTION.
+  assert.equal(row.button.clickCount, 0);
+});
+
 test('AUTO_CONTINUE preserves session context while starting an exact course player route', async () => {
   const video = new FakeElement('video');
   const document = new FakeDocument([video], '已学习：00:01，要求学习：00:08');

@@ -197,9 +197,14 @@
         case 'COURSE_PICKED': {
           const senderTabId = sender?.tab?.id;
           const courseKey = message.courseKey;
-          if (!Number.isInteger(senderTabId) || !/^course-[a-z0-9]{1,8}$/.test(courseKey || '') || !await allowedTab(senderTabId)) return { ok: false };
+          if (!Number.isInteger(senderTabId) || !/^course-[a-z0-9]{1,8}$/.test(courseKey || '')) return { ok: false, reason: 'invalid-request' };
+          // Chrome supplies the sender frame URL. A fresh tabs.get can briefly fail during SPA navigation.
+          if (sender.url !== undefined) {
+            if (!isAllowedUrl(sender.url) || (sender.frameId !== undefined && sender.frameId !== 0)) return { ok: false, reason: 'tab-not-allowed' };
+          } else if (!await allowedTab(senderTabId)) return { ok: false, reason: 'tab-unavailable' };
           const session = await getSession(senderTabId);
-          if (!session || session.phase !== 'running') return { ok: false };
+          if (!session) return { ok: false, reason: 'session-missing' };
+          if (session.phase !== 'running') return { ok: false, reason: 'session-paused' };
           const sameCourse = session.pendingKey === courseKey;
           const priorCheckAt = session.practiceCheckAt;
           session.pendingKey = courseKey;
