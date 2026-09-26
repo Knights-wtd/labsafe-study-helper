@@ -134,8 +134,19 @@ featureTest('tab removal and navigation off the allowed site clear the session',
   await send(chrome, { type: 'FLOW_START', tabId: 9, rate: 1 });
   const tab = tabs.get(9);
   tab.url = 'https://example.com/';
-  await chrome.tabs.onUpdated.emit(9, { url: tab.url }, { ...tab });
+  await chrome.tabs.onUpdated.emit(9, { status: 'complete', url: tab.url }, { ...tab });
   assert.equal(data.labsafeSessions['9'], undefined);
+});
+
+featureTest('intermediate navigation outside the learning path does not discard a returning session', async () => {
+  const { chrome, tabs, data } = makeChrome([{ id: 7, url: courseUrl }]);
+  createBackground(chrome);
+  await send(chrome, { type: 'FLOW_START', tabId: 7, rate: 1 });
+  await chrome.tabs.onUpdated.emit(7, { url: 'https://labsafe.lzjtu.edu.cn/' }, { id: 7, url: 'https://labsafe.lzjtu.edu.cn/' });
+  assert.ok(data.labsafeSessions['7']);
+  tabs.get(7).url = 'https://labsafe.lzjtu.edu.cn/lab-study-front/examTask/75';
+  await chrome.tabs.onUpdated.emit(7, { status: 'complete', url: tabs.get(7).url }, { ...tabs.get(7) });
+  assert.ok(data.labsafeSessions['7']);
 });
 
 featureTest('FLOW_COMPLETE clears only its allowed content tab session without sending STOP', async () => {
@@ -279,6 +290,58 @@ featureTest('COURSE_PICKED reports missing session without creating a new one', 
     { tab: { id: 7 }, url: courseUrl, frameId: 0 });
   assert.deepEqual(result, { ok: false, reason: 'session-missing' });
   assert.equal(data.labsafeSessions, undefined);
+});
+
+featureTest('a lost active session can recover its saved course state, but a user stop cannot', async () => {
+  const { chrome, data } = makeChrome([{ id: 7, url: courseUrl }]);
+  createBackground(chrome);
+  await send(chrome, { type: 'FLOW_START', tabId: 7, rate: 2 });
+  await send(chrome, { type: 'COURSE_PICKED', courseKey: 'course-ab12' }, { tab: { id: 7 }, url: courseUrl, frameId: 0 });
+  delete data.labsafeSessions['7'];
+  const sender = { tab: { id: 7 }, url: courseUrl, frameId: 0 };
+  const recovered = await send(chrome, { type: 'FLOW_RECOVER' }, sender);
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.session.pendingKey, 'course-ab12');
+  assert.equal(recovered.session.rate, 2);
+  await send(chrome, { type: 'FLOW_STOP', tabId: 7 });
+  assert.equal((await send(chrome, { type: 'FLOW_RECOVER' }, sender)).ok, false);
+  const diagnosis = await send(chrome, { type: 'FLOW_GET', tabId: 7 });
+  assert.equal(diagnosis.recoverable, false);
+  assert.equal(diagnosis.lastEvent.type, 'user-stop');
+});
+
+featureTest('completed sessions cannot restart from the recovery snapshot', async () => {
+  const { chrome } = makeChrome([{ id: 7, url: courseUrl }]);
+  createBackground(chrome);
+  await send(chrome, { type: 'FLOW_START', tabId: 7, rate: 1 });
+  const sender = { tab: { id: 7 }, url: courseUrl, frameId: 0 };
+  await send(chrome, { type: 'FLOW_COMPLETE' }, sender);
+  assert.equal((await send(chrome, { type: 'FLOW_RECOVER' }, sender)).ok, false);
+  assert.equal((await send(chrome, { type: 'FLOW_GET', tabId: 7 })).lastEvent.type, 'complete');
+});
+
+featureTest('late messages from a previous study run cannot pause or complete the current run', async () => {
+  const { chrome, data } = makeChrome([{ id: 7, url: courseUrl }]);
+  createBackground(chrome);
+  const sender = { tab: { id: 7 }, url: courseUrl, frameId: 0 };
+  await send(chrome, { type: 'FLOW_START', tabId: 7, rate: 1, runId: 'run-previous' });
+  await send(chrome, { type: 'FLOW_START', tabId: 7, rate: 1, runId: 'run-current' });
+  assert.equal((await send(chrome, { type: 'FLOW_ATTENTION', runId: 'run-previous' }, sender)).ok, false);
+  assert.equal((await send(chrome, { type: 'FLOW_COMPLETE', runId: 'run-previous' }, sender)).ok, false);
+  assert.equal((await send(chrome, { type: 'COURSE_PICKED', courseKey: 'course-ab12', runId: 'run-previous' }, sender)).ok, false);
+  assert.equal(data.labsafeSessions['7'].phase, 'running');
+  assert.equal(data.labsafeSessions['7'].pendingKey, null);
+  assert.equal(data.labsafeSessions['7'].runId, 'run-current');
+});
+
+featureTest('attention pauses the background session and preserves learned course state', async () => {
+  const { chrome, data } = makeChrome([{ id: 7, url: courseUrl }]);
+  createBackground(chrome);
+  await send(chrome, { type: 'FLOW_START', tabId: 7, rate: 1 });
+  await send(chrome, { type: 'COURSE_PICKED', courseKey: 'course-ab12' }, { tab: { id: 7 }, url: courseUrl, frameId: 0 });
+  const response = await send(chrome, { type: 'FLOW_ATTENTION', reason: 'catalog issue' }, { tab: { id: 7 }, url: courseUrl, frameId: 0 });
+  assert.equal(response.session.phase, 'paused');
+  assert.equal(data.labsafeSessions['7'].pendingKey, 'course-ab12');
 });
 
 featureTest('completing a module child preserves the catalog parent until the module itself meets its timer', async () => {

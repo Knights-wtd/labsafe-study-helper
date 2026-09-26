@@ -2,11 +2,13 @@
   'use strict';
 
   const SESSION_KEY = 'labsafeSessions';
+  const RECOVERY_KEY = 'labsafeRecoverySessions';
+  const SESSION_EVENT_KEY = 'labsafeSessionEvents';
   const ALLOWED_HOST = 'labsafe.lzjtu.edu.cn';
   const ALLOWED_PATH = '/lab-study-front/';
   const HANDLED_MESSAGES = new Set([
     'FLOW_START', 'FLOW_GET', 'FLOW_PAUSE', 'FLOW_RESUME', 'FLOW_STOP', 'FLOW_SET_RATE',
-    'COURSE_PICKED', 'MODULE_ENTERED', 'COURSE_COMPLETED', 'COURSE_DEFERRED', 'FLOW_COMPLETE', 'FLOW_ATTENTION',
+    'COURSE_PICKED', 'MODULE_ENTERED', 'COURSE_COMPLETED', 'COURSE_DEFERRED', 'FLOW_COMPLETE', 'FLOW_ATTENTION', 'FLOW_RECOVER',
   ]);
   const injectionLocks = new Map();
 
@@ -29,6 +31,14 @@
     return Number.isFinite(rate) && rate >= 1 && rate <= 16 ? rate : null;
   }
 
+  function validRunId(value) {
+    return typeof value === 'string' && /^[a-zA-Z0-9-]{8,80}$/.test(value) ? value : null;
+  }
+
+  function sameRun(session, message) {
+    return !session?.runId || session.runId === message?.runId;
+  }
+
   function emptySessions() {
     return {};
   }
@@ -45,6 +55,7 @@
       deferredKeys: Array.isArray(value.deferredKeys) ? [...new Set(value.deferredKeys.filter((item) => typeof item === 'string').slice(0, 500))] : [],
       deferredPeriodIds: Array.isArray(value.deferredPeriodIds) ? [...new Set(value.deferredPeriodIds.filter((item) => typeof item === 'string').slice(0, 500))] : [],
       pendingKey: typeof value.pendingKey === 'string' ? value.pendingKey : null,
+      ...(validRunId(value.runId) ? { runId: value.runId } : {}),
       ...(Number.isSafeInteger(value.practiceCheckAt) && value.practiceCheckAt > 0
         ? { practiceCheckAt: value.practiceCheckAt } : {}),
       ...(typeof value.moduleParentPeriodId === 'string' && /^[\w-]{1,80}$/.test(value.moduleParentPeriodId)
@@ -70,6 +81,24 @@
       await chromeApi.storage.session.set({ [SESSION_KEY]: sessions });
     }
 
+    async function readRecoverySessions() {
+      const saved = await chromeApi.storage.session.get(RECOVERY_KEY);
+      const raw = saved?.[RECOVERY_KEY];
+      return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    }
+
+    async function readSessionEvents() {
+      const saved = await chromeApi.storage.session.get(SESSION_EVENT_KEY);
+      const raw = saved?.[SESSION_EVENT_KEY];
+      return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    }
+
+    async function recordSessionEvent(tabId, type) {
+      const events = await readSessionEvents();
+      events[String(tabId)] = { type, at: new Date().toISOString() };
+      await chromeApi.storage.session.set({ [SESSION_EVENT_KEY]: events });
+    }
+
     async function getSession(tabId) {
       if (!Number.isInteger(tabId)) return null;
       const sessions = await readSessions();
@@ -80,14 +109,21 @@
       const sessions = await readSessions();
       sessions[String(session.tabId)] = session;
       await writeSessions(sessions);
+      const recovery = await readRecoverySessions();
+      recovery[String(session.tabId)] = session;
+      await chromeApi.storage.session.set({ [RECOVERY_KEY]: recovery });
       return session;
     }
 
-    async function clearSession(tabId) {
+    async function clearSession(tabId, reason = 'cleared') {
       if (!Number.isInteger(tabId)) return;
       const sessions = await readSessions();
       delete sessions[String(tabId)];
       await writeSessions(sessions);
+      const recovery = await readRecoverySessions();
+      delete recovery[String(tabId)];
+      await chromeApi.storage.session.set({ [RECOVERY_KEY]: recovery });
+      await recordSessionEvent(tabId, reason);
     }
 
     async function allowedTab(tabId) {
@@ -127,6 +163,7 @@
             deferredKeys: session.deferredKeys,
             deferredPeriodIds: session.deferredPeriodIds,
             pendingKey: session.pendingKey,
+            ...(session.runId ? { runId: session.runId } : {}),
             ...(session.practiceCheckAt ? { practiceCheckAt: session.practiceCheckAt } : {}),
             ...(session.moduleParentPeriodId ? { moduleParentPeriodId: session.moduleParentPeriodId } : {}),
             ...(session.visitedModuleKeys ? { visitedModuleKeys: session.visitedModuleKeys } : {}),
@@ -158,12 +195,30 @@
             deferredKeys: [],
             deferredPeriodIds: [],
             pendingKey: null,
+            ...(validRunId(message.runId) ? { runId: message.runId } : {}),
           };
           await putSession(session);
+          await recordSessionEvent(tabId, 'started');
           return { ok: true, session };
         }
-        case 'FLOW_GET':
-          return { ok: true, session: await getSession(tabId) };
+        case 'FLOW_GET': {
+          const session = await getSession(tabId);
+          const saved = Number.isInteger(tabId) ? (await readRecoverySessions())[String(tabId)] : null;
+          const lastEvent = Number.isInteger(tabId) ? (await readSessionEvents())[String(tabId)] || null : null;
+          return { ok: true, session, recoverable: Boolean(normalizeSession(saved, tabId)), lastEvent };
+        }
+        case 'FLOW_RECOVER': {
+          const senderTabId = sender?.tab?.id;
+          if (!await allowedContentSender(sender)) return { ok: false };
+          const current = await getSession(senderTabId);
+          if (current) return { ok: current.phase === 'running' && sameRun(current, message), session: current };
+          const saved = (await readRecoverySessions())[String(senderTabId)];
+          const session = normalizeSession(saved, senderTabId);
+          if (!session || session.phase !== 'running' || !sameRun(session, message)) return { ok: false };
+          await putSession(session);
+          await recordSessionEvent(senderTabId, 'recovered');
+          return { ok: true, session };
+        }
         case 'FLOW_PAUSE': {
           const session = await getSession(tabId);
           if (!session) return { ok: true, session: null };
@@ -184,7 +239,7 @@
           return { ok: true, session };
         }
         case 'FLOW_STOP':
-          await clearSession(tabId);
+          await clearSession(tabId, 'user-stop');
           if (tabId !== null) await bestEffortMessage(tabId, { type: 'STOP' });
           return { ok: true, session: null };
         case 'FLOW_SET_RATE': {
@@ -206,6 +261,7 @@
           } else if (!await allowedTab(senderTabId)) return { ok: false, reason: 'tab-unavailable' };
           const session = await getSession(senderTabId);
           if (!session) return { ok: false, reason: 'session-missing' };
+          if (!sameRun(session, message)) return { ok: false, reason: 'stale-run' };
           if (session.phase !== 'running') return { ok: false, reason: 'session-paused' };
           const sameCourse = session.pendingKey === courseKey;
           const priorCheckAt = session.practiceCheckAt;
@@ -233,7 +289,7 @@
           const moduleKey = String(message.moduleKey ?? '');
           if (!/^[\w-]{1,80}$/.test(parentPeriodId) || !/^course-[a-z0-9]{1,8}$/.test(moduleKey) || !await allowedContentSender(sender)) return { ok: false };
           const session = await getSession(senderTabId);
-          if (!session || session.phase !== 'running') return { ok: false };
+          if (!session || session.phase !== 'running' || !sameRun(session, message)) return { ok: false };
           if (session.moduleParentPeriodId !== parentPeriodId) session.visitedModuleKeys = [];
           session.moduleParentPeriodId = parentPeriodId;
           if (!session.visitedModuleKeys.includes(moduleKey)) session.visitedModuleKeys.push(moduleKey);
@@ -245,7 +301,7 @@
           const periodId = message.periodId;
           if (!/^[\w-]{1,80}$/.test(String(periodId ?? '')) || !await allowedContentSender(sender)) return { ok: false };
           const session = await getSession(senderTabId);
-          if (!session) return { ok: false };
+          if (!session || !sameRun(session, message)) return { ok: false };
           const normalizedPeriodId = String(periodId);
           if (!session.moduleParentPeriodId || session.moduleParentPeriodId === normalizedPeriodId) {
             if (session.pendingKey && !session.completedKeys.includes(session.pendingKey)) session.completedKeys.push(session.pendingKey);
@@ -263,7 +319,7 @@
           const periodId = message.periodId;
           if (!/^[\w-]{1,80}$/.test(String(periodId ?? '')) || !await allowedContentSender(sender)) return { ok: false };
           const session = await getSession(senderTabId);
-          if (!session || session.phase !== 'running') return { ok: false };
+          if (!session || session.phase !== 'running' || !sameRun(session, message)) return { ok: false };
           const normalizedPeriodId = String(periodId);
           if (!session.moduleParentPeriodId || session.moduleParentPeriodId === normalizedPeriodId) {
             if (session.pendingKey && !session.deferredKeys.includes(session.pendingKey)) session.deferredKeys.push(session.pendingKey);
@@ -279,14 +335,21 @@
         case 'FLOW_COMPLETE': {
           const senderTabId = sender?.tab?.id;
           if (!await allowedContentSender(sender)) return { ok: false };
-          await clearSession(senderTabId);
+          const session = await getSession(senderTabId);
+          if (!session || !sameRun(session, message)) return { ok: false };
+          await clearSession(senderTabId, 'complete');
           return { ok: true, session: null };
         }
         case 'FLOW_ATTENTION': {
           const senderTabId = sender?.tab?.id;
           if (!Number.isInteger(senderTabId)) return { ok: false };
-          await clearSession(senderTabId);
-          return { ok: true, session: null };
+          const session = await getSession(senderTabId);
+          if (!session) return { ok: true, session: null };
+          if (!sameRun(session, message)) return { ok: false };
+          session.phase = 'paused';
+          await putSession(session);
+          await recordSessionEvent(senderTabId, 'attention-paused');
+          return { ok: true, session };
         }
         default:
           return undefined;
@@ -313,13 +376,19 @@
         }
         const session = await getSession(tabId);
         if (!session) return;
-        if (url && !isAllowedUrl(url)) return clearSession(tabId);
+        if (url && !isAllowedUrl(url)) {
+          if (changeInfo?.status !== 'complete') return;
+          try {
+            url = (await chromeApi.tabs.get(tabId))?.url || '';
+          } catch { return; }
+          if (!isAllowedUrl(url)) return clearSession(tabId, 'left-site');
+        }
         if (session.phase === 'running' && changeInfo?.status === 'complete' && isAllowedUrl(url)) return continueSession(tabId);
       })().catch(() => {});
     });
 
     chromeApi.tabs.onRemoved?.addListener((tabId) => {
-      return clearSession(tabId).catch(() => {});
+      return clearSession(tabId, 'tab-closed').catch(() => {});
     });
 
     return { continueSession, getSession };

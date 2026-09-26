@@ -171,7 +171,8 @@
     } catch {
       throw new Error('无法保存倍速设置。');
     }
-    const flow = await sendFlow('FLOW_START', { tabId: tab.id, rate });
+    const runId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const flow = await sendFlow('FLOW_START', { tabId: tab.id, rate, runId });
     await refreshPracticeProgress().catch(() => { practiceProgress.textContent = '本轮题库进度暂不可用'; });
     try {
       await inject(tab.id);
@@ -180,6 +181,7 @@
         completedKeys: flow.session.completedKeys,
         completedPeriodIds: flow.session.completedPeriodIds,
         pendingKey: flow.session.pendingKey,
+        runId: flow.session.runId,
       });
       return response;
     } catch (error) {
@@ -219,9 +221,15 @@
   async function exportDiagnosis() {
     await runWithTab({ ensureInjected: true }, async (tab) => {
       const response = await sendToTab(tab.id, 'DIAGNOSE');
+      const flow = await sendFlow('FLOW_GET', { tabId: tab.id });
       const report = {
         exportedAt: new Date().toISOString(),
         diagnosis: response.diagnosis,
+        background: {
+          phase: flow.session?.phase || null,
+          recoverable: flow.recoverable === true,
+          lastEvent: flow.lastEvent || null,
+        },
       };
       const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
       const objectUrl = URL.createObjectURL(blob);

@@ -355,6 +355,18 @@
     return readCatalogRows(document, view).find((candidate) => !skipped.has(candidate.courseKey)) || null;
   }
 
+  function hasVisibleUnfinishedCatalogProgress(document, view) {
+    return Array.from(document?.querySelectorAll?.('tr, [role="row"]') || []).some((row) => {
+      if (!isVisible(row, view)) return false;
+      const text = normalizeCatalogText(row.innerText ?? row.textContent);
+      const match = text.match(/已学习\s*[:：]\s*(\d+:[0-5]?\d:[0-5]?\d)\s*[/／]\s*(\d+:[0-5]?\d:[0-5]?\d)/);
+      if (!match) return false;
+      const learned = parseCatalogDuration(match[1]);
+      const required = parseCatalogDuration(match[2]);
+      return learned !== null && required !== null && learned < required;
+    });
+  }
+
   function isPaginationElement(element) {
     const classes = String(element?.className || '').split(/\s+/);
     return classes.includes('el-pagination') || classes.includes('ivu-page');
@@ -842,7 +854,8 @@
     async _sendBackground(type, payload = {}) {
       if (!this.runtime?.sendMessage) return null;
       try {
-        return await this.runtime.sendMessage({ type, ...payload });
+        return await this.runtime.sendMessage({ type, ...payload,
+          ...(this.autoContext?.runId ? { runId: this.autoContext.runId } : {}) });
       } catch {
         return null;
       }
@@ -864,6 +877,7 @@
       this.attentionSent = false;
       this.autoContext = {
         rate,
+        runId: typeof message.runId === 'string' ? message.runId : null,
         completedKeys: new Set(Array.isArray(message.completedKeys) ? message.completedKeys.filter((key) => /^course-[a-z0-9]{1,8}$/.test(key)) : []),
         completedPeriodIds: new Set(Array.isArray(message.completedPeriodIds) ? message.completedPeriodIds.map(String).filter((id) => /^[\w-]{1,80}$/.test(id)) : []),
         deferredKeys: new Set(Array.isArray(message.deferredKeys) ? message.deferredKeys.filter((key) => /^course-[a-z0-9]{1,8}$/.test(key)) : []),
@@ -1486,7 +1500,6 @@
       }
       const currentPage = this._readCurrentPageNumber();
       if (!currentPage) return this._deferCatalogRetry('目录页码长时间无法唯一识别，已停止。');
-      this.catalogRetries = 0;
       this.catalogVisitedPageNumbers.add(currentPage.page);
       if (currentPage.singlePage || currentPage.page === 1) {
         this.catalogFirstPageConfirmed = true;
@@ -1505,15 +1518,25 @@
       const row = chooseCourseRow(this.document, this.window,
         new Set([...this.autoContext.completedKeys, ...this.autoContext.deferredKeys]));
       if (row) {
+        this.catalogRetries = 0;
         this._markStep(`row:${row.courseKey}`);
         const operation = (async () => {
           let ack = null;
+          let recovered = false;
           for (let attempt = 0; attempt < 3; attempt += 1) {
             ack = await this._sendBackground('COURSE_PICKED', {
               courseKey: row.courseKey,
               learnedSeconds: row.learnedSeconds,
               requiredSeconds: row.requiredSeconds,
             });
+            if (ack?.reason === 'session-missing' && !recovered) {
+              recovered = true;
+              const recovery = await this._sendBackground('FLOW_RECOVER');
+              if (recovery?.ok && this.state === 'running' && this.autoFlow && this._routeKind() === 'catalog') {
+                this._markStep('course-session-recovered');
+                continue;
+              }
+            }
             if (ack?.ok || (ack && ack.reason !== 'tab-unavailable')) break;
             if (attempt < 2) {
               this._markStep(`course-pick-retry:${attempt + 1}`);
@@ -1553,10 +1576,16 @@
         finally { if (this.autoAction === operation) this.autoAction = null; }
       }
 
+      if (readCatalogRows(this.document, this.window).length === 0 &&
+        hasVisibleUnfinishedCatalogProgress(this.document, this.window)) {
+        return this._deferCatalogRetry('目录仍显示未完成课程，但“去学习”控件长时间无法确认。');
+      }
+
       const signature = this._catalogSignature();
       if (this.catalogVisitedPages.has(signature)) return this._setAttention('检测到目录页重复，已停止以避免循环。');
       const next = chooseCatalogNextPage(this.document, this.window);
       if (next) {
+        this.catalogRetries = 0;
         this.catalogVisitedPages.add(signature);
         try {
           next.click();

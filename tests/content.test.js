@@ -538,7 +538,7 @@ test('catalog waits for a transient COURSE_PICKED rejection, then clicks only af
   assert.equal(row.button.clickCount, 1);
 });
 
-test('catalog does not retry when COURSE_PICKED reports a missing session', async () => {
+test('catalog stops without clicking when a missing session cannot be recovered', async () => {
   const row = catalogRow('课程甲', '微课堂', '已学习：00:01:00 / 00:08:00');
   const fixture = catalogFixture([row.row]);
   const { activePage } = markUnlearnedTabSelected(fixture.document);
@@ -552,8 +552,33 @@ test('catalog does not retry when COURSE_PICKED reports a missing session', asyn
   const status = await controller.autoContinue({ rate: 1 });
   assert.equal(status.state, 'needsAttention');
   assert.match(status.reason, /会话已丢失/);
-  assert.equal(attempts, 2); // COURSE_PICKED followed by FLOW_ATTENTION.
+  assert.equal(attempts, 3); // COURSE_PICKED, FLOW_RECOVER, then FLOW_ATTENTION.
   assert.equal(row.button.clickCount, 0);
+});
+
+test('catalog recovers one lost background session before choosing its next course', async () => {
+  const row = catalogRow('课程甲', '微课堂', '已学习：00:01:00 / 00:08:00');
+  const fixture = catalogFixture([row.row]);
+  const { activePage } = markUnlearnedTabSelected(fixture.document);
+  attachCatalogPager(fixture.document, activePage);
+  const view = fakeWindow(fixture.document);
+  view.location.href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/examTask/75';
+  const messages = [];
+  const runIds = [];
+  const controller = new StudyController({ document: fixture.document, window: view, runtime: {
+    sendMessage: async (message) => {
+      messages.push(message.type);
+      runIds.push(message.runId);
+      if (message.type === 'FLOW_RECOVER') return { ok: true, session: { phase: 'running' } };
+      return messages.filter((type) => type === 'COURSE_PICKED').length === 1
+        ? { ok: false, reason: 'session-missing' } : { ok: true, session: {} };
+    },
+  } });
+  const status = await controller.autoContinue({ rate: 1, runId: 'run-current' });
+  assert.equal(status.state, 'running');
+  assert.deepEqual(messages, ['COURSE_PICKED', 'FLOW_RECOVER', 'COURSE_PICKED']);
+  assert.deepEqual(runIds, ['run-current', 'run-current', 'run-current']);
+  assert.equal(row.button.clickCount, 1);
 });
 
 test('AUTO_CONTINUE preserves session context while starting an exact course player route', async () => {
@@ -1652,6 +1677,23 @@ test('readCatalogRows joins Element UI header and body tables and rejects ambigu
   duplicateHeader.className = 'el-table__header-wrapper';
   const ambiguous = splitCatalogFixture([first.row], { headerWrappers: [fixture.headerWrapper, duplicateHeader] });
   assert.deepEqual(readCatalogRows(ambiguous.document), []);
+});
+
+test('catalog does not clear the session while unfinished progress is visible but its action button is loading', async () => {
+  const row = catalogRow('待加载课程', '安全知识', '已学习：00:00:00 / 00:03:00', { disabled: true });
+  const fixture = catalogFixture([row.row]);
+  markUnlearnedTabSelected(fixture.document);
+  const view = fakeWindow(fixture.document);
+  view.location.href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/examTask/75';
+  const messages = [];
+  const controller = new StudyController({ document: fixture.document, window: view, runtime: {
+    sendMessage: async (message) => { messages.push(message.type); return { ok: true }; },
+  } });
+  const status = await controller.autoContinue({ rate: 1 });
+  assert.equal(status.state, 'running');
+  assert.equal(row.button.clickCount, 0);
+  assert.equal(view.timers.size, 1);
+  assert.deepEqual(messages, []);
 });
 
 test('catalog ignores hidden duplicate table wrappers left by a previous page render', () => {
