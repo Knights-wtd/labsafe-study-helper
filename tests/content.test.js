@@ -427,6 +427,12 @@ test('article return selector requires one visible exact 返回 control', () => 
   assert.equal(chooseArticleReturn(new FakeDocument([decorated])), decorated);
   const fontIcon = new FakeElement('span', '\ue600 返回');
   assert.equal(chooseArticleReturn(new FakeDocument([fontIcon])), fontIcon);
+  const top = new FakeElement('button', '返回');
+  const bottom = new FakeElement('button', '返回');
+  top.className = bottom.className = 'btn ivu-btn';
+  const topLabel = new FakeElement('span', '返回', { parentElement: top });
+  const bottomLabel = new FakeElement('span', '返回', { parentElement: bottom });
+  assert.equal(chooseArticleReturn(new FakeDocument([top, topLabel, bottom, bottomLabel])), top);
   assert.equal(chooseArticleReturn(new FakeDocument([decorated, new FakeElement('span', '← 返回')])), null);
   assert.equal(chooseArticleReturn(new FakeDocument([back, new FakeElement('a', '返回')])), null);
   assert.equal(chooseArticleReturn(new FakeDocument([new FakeElement('button', '返回课程主页')])), null);

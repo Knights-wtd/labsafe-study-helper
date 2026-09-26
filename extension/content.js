@@ -536,7 +536,14 @@
       for (let ancestor = other.parentElement; ancestor; ancestor = ancestor.parentElement) if (ancestor === candidate) return true;
       return false;
     }));
-    return leaves.length === 1 ? leaves[0] : null;
+    if (leaves.length === 1) return leaves[0];
+    const repeatedIviewButtons = leaves.length > 1 && leaves.every((element) => {
+      const classes = String(element.className || '').split(/\s+/);
+      const label = String(element.innerText ?? element.textContent ?? '').replace(/\s+/g, ' ').trim();
+      return String(element.tagName || '').toUpperCase() === 'BUTTON' &&
+        classes.includes('btn') && classes.includes('ivu-btn') && label === '返回';
+    });
+    return repeatedIviewButtons ? leaves[0] : null;
   }
 
   function sanitizeText(value) {
