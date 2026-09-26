@@ -948,6 +948,23 @@ test('catalog retries while the course table is still rendering', async () => {
   assert.deepEqual(messages, ['COURSE_PICKED']);
 });
 
+test('a slow course navigation does not pause the session after the old ten-second limit', async () => {
+  const row = catalogRow('慢跳转课程', '微课堂', '已学习：00:00:00 / 00:05:00');
+  const fixture = catalogFixture([row.row]);
+  const view = fakeWindow(fixture.document);
+  view.location.href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/examTask/75';
+  const controller = new StudyController({ document: fixture.document, window: view,
+    runtime: { sendMessage: async () => ({ ok: true }) } });
+  await controller.autoContinue({ rate: 1 });
+  assert.equal(row.button.clickCount, 1);
+  for (let index = 0; index < 25; index += 1) view.runTimers();
+  assert.equal(controller.status().state, 'running');
+  view.location.href = 'https://labsafe.lzjtu.edu.cn/lab-study-front/person';
+  view.runTimers();
+  assert.equal(controller.status().state, 'running');
+  assert.equal(controller.catalogSelecting, false);
+});
+
 test('catalog does not announce completion while an iView table header has an empty loading body', async () => {
   const course = catalogRow('课程甲', '微课堂', '已学习：00:00:00 / 00:08:00');
   const fixture = splitCatalogFixture([]);
@@ -980,6 +997,23 @@ test('catalog gives up with attention after the table never appears', async () =
   for (let index = 0; index < 30; index += 1) view.runTimers();
   assert.equal(controller.status().state, 'needsAttention');
   assert.match(controller.status().reason, /目录表格/);
+});
+
+test('a page error requests the five-second automatic restart only once', async () => {
+  const document = new FakeDocument([], '');
+  const view = fakeWindow(document);
+  const messages = [];
+  const controller = new StudyController({ document, window: view,
+    runtime: { sendMessage: async (message) => { messages.push(message.type); return { ok: true }; } } });
+  controller.autoFlow = true;
+  controller.autoContext = { runId: 'run-original' };
+  controller.state = 'running';
+  controller._setAttention('原始错误');
+  controller._setAttention('次生错误');
+  assert.equal(controller.status().reason, '原始错误');
+  view.runTimers();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(messages, ['FLOW_ATTENTION', 'FLOW_AUTO_RESTART']);
 });
 
 test('AUTO_CONTINUE wakes a stopped controller instead of silently ignoring it', async () => {

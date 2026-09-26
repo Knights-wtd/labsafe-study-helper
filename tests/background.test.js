@@ -76,11 +76,11 @@ featureTest('manual FLOW_START creates a session only for an allowed tab', async
 
   assert.deepEqual(await send(chrome, { type: 'FLOW_START', tabId: 7, rate: 2.5 }), {
     ok: true,
-    session: { tabId: 7, rate: 2.5, phase: 'running', completedKeys: [], completedPeriodIds: [], deferredKeys: [], deferredPeriodIds: [], pendingKey: null },
+    session: { tabId: 7, rate: 2.5, phase: 'running', completedKeys: [], completedPeriodIds: [], deferredKeys: [], deferredPeriodIds: [], pendingKey: null, autoRestartCount: 0 },
   });
   assert.equal((await send(chrome, { type: 'FLOW_START', tabId: 8, rate: 2 })).ok, false);
   assert.deepEqual(chrome.storage.session.get ? (await chrome.storage.session.get('labsafeSessions')).labsafeSessions : null, {
-    '7': { tabId: 7, rate: 2.5, phase: 'running', completedKeys: [], completedPeriodIds: [], deferredKeys: [], deferredPeriodIds: [], pendingKey: null },
+    '7': { tabId: 7, rate: 2.5, phase: 'running', completedKeys: [], completedPeriodIds: [], deferredKeys: [], deferredPeriodIds: [], pendingKey: null, autoRestartCount: 0 },
   });
 });
 
@@ -183,6 +183,7 @@ featureTest('session data survives background recreation and content events rema
     deferredKeys: [],
     deferredPeriodIds: [],
     pendingKey: null,
+    autoRestartCount: 0,
   });
   assert.deepEqual(data.labsafeSessions['7'], response.session);
 });
@@ -210,7 +211,7 @@ featureTest('COURSE_DEFERRED records an unfinished period without marking it com
     ok: true,
     session: {
       tabId: 7, rate: 1, phase: 'running', completedKeys: [], completedPeriodIds: [],
-      deferredKeys: ['course-ab12'], deferredPeriodIds: ['period-7'], pendingKey: null,
+      deferredKeys: ['course-ab12'], deferredPeriodIds: ['period-7'], pendingKey: null, autoRestartCount: 0,
     },
   });
   assert.deepEqual(data.labsafeSessions['7'], result.session);
@@ -342,6 +343,83 @@ featureTest('attention pauses the background session and preserves learned cours
   const response = await send(chrome, { type: 'FLOW_ATTENTION', reason: 'catalog issue' }, { tab: { id: 7 }, url: courseUrl, frameId: 0 });
   assert.equal(response.session.phase, 'paused');
   assert.equal(data.labsafeSessions['7'].pendingKey, 'course-ab12');
+  assert.equal(response.session.attentionReason, 'catalog issue');
+  const duplicate = await send(chrome, { type: 'FLOW_ATTENTION', reason: 'secondary error' },
+    { tab: { id: 7 }, url: courseUrl, frameId: 0 });
+  assert.equal(duplicate.ok, false);
+  const diagnosis = await send(chrome, { type: 'FLOW_GET', tabId: 7 });
+  assert.equal(diagnosis.lastEvent.reason, 'catalog issue');
+  assert.equal(diagnosis.session.attentionReason, 'catalog issue');
+});
+
+featureTest('attention automatically restarts after five seconds without losing progress', async () => {
+  const { chrome, sent } = makeChrome([{ id: 7, url: courseUrl }]);
+  const callbacks = new Map();
+  let nextId = 1;
+  createBackground(chrome, {
+    setTimeout(callback, delay) { assert.equal(delay, 5000); const id = nextId++; callbacks.set(id, callback); return id; },
+    clearTimeout(id) { callbacks.delete(id); },
+  });
+  const sender = { tab: { id: 7 }, url: courseUrl, frameId: 0 };
+  await send(chrome, { type: 'FLOW_START', tabId: 7, rate: 2, runId: 'run-original' });
+  await send(chrome, { type: 'COURSE_PICKED', courseKey: 'course-ab12', runId: 'run-original' }, sender);
+  await send(chrome, { type: 'FLOW_ATTENTION', reason: 'page changed slowly', runId: 'run-original' }, sender);
+  assert.equal(callbacks.size, 1);
+  const callback = [...callbacks.values()][0];
+  callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  const resumed = await send(chrome, { type: 'FLOW_GET', tabId: 7 });
+  assert.equal(resumed.session.phase, 'running');
+  assert.equal(resumed.session.pendingKey, 'course-ab12');
+  assert.equal(resumed.session.autoRestartCount, 1);
+  assert.notEqual(resumed.session.runId, 'run-original');
+  assert.equal(sent.at(-1).message.type, 'AUTO_CONTINUE');
+});
+
+featureTest('manual pause cancels a scheduled automatic restart', async () => {
+  const { chrome } = makeChrome([{ id: 7, url: courseUrl }]);
+  const callbacks = new Map();
+  let nextId = 1;
+  createBackground(chrome, {
+    setTimeout(callback) { const id = nextId++; callbacks.set(id, callback); return id; },
+    clearTimeout(id) { callbacks.delete(id); },
+  });
+  const sender = { tab: { id: 7 }, url: courseUrl, frameId: 0 };
+  await send(chrome, { type: 'FLOW_START', tabId: 7, rate: 1 });
+  await send(chrome, { type: 'FLOW_ATTENTION', reason: 'wait', runId: null }, sender);
+  assert.equal(callbacks.size, 1);
+  await send(chrome, { type: 'FLOW_PAUSE', tabId: 7 });
+  assert.equal(callbacks.size, 0);
+  assert.equal((await send(chrome, { type: 'FLOW_GET', tabId: 7 })).session.phase, 'paused');
+});
+
+featureTest('the same failing course stops auto-restarting after five attempts', async () => {
+  const { chrome } = makeChrome([{ id: 7, url: courseUrl }]);
+  const callbacks = new Map();
+  let nextId = 1;
+  createBackground(chrome, {
+    setTimeout(callback) { const id = nextId++; callbacks.set(id, callback); return id; },
+    clearTimeout(id) { callbacks.delete(id); },
+  });
+  const sender = { tab: { id: 7 }, url: courseUrl, frameId: 0 };
+  await send(chrome, { type: 'FLOW_START', tabId: 7, rate: 1, runId: 'run-initial' });
+  await send(chrome, { type: 'COURSE_PICKED', courseKey: 'course-ab12', runId: 'run-initial' }, sender);
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const active = (await send(chrome, { type: 'FLOW_GET', tabId: 7 })).session;
+    await send(chrome, { type: 'FLOW_ATTENTION', reason: 'same failure', runId: active.runId }, sender);
+    assert.equal(callbacks.size, 1);
+    const callback = [...callbacks.values()][0];
+    callbacks.clear();
+    callback();
+    await new Promise((resolve) => setImmediate(resolve));
+    const restarted = (await send(chrome, { type: 'FLOW_GET', tabId: 7 })).session;
+    assert.equal(restarted.autoRestartCount, attempt + 1);
+    await send(chrome, { type: 'COURSE_PICKED', courseKey: 'course-ab12', runId: restarted.runId }, sender);
+  }
+  const active = (await send(chrome, { type: 'FLOW_GET', tabId: 7 })).session;
+  await send(chrome, { type: 'FLOW_ATTENTION', reason: 'same failure', runId: active.runId }, sender);
+  assert.equal(callbacks.size, 0);
+  assert.equal((await send(chrome, { type: 'FLOW_GET', tabId: 7 })).session.phase, 'paused');
 });
 
 featureTest('completing a module child preserves the catalog parent until the module itself meets its timer', async () => {

@@ -8,9 +8,11 @@
   const ALLOWED_PATH = '/lab-study-front/';
   const HANDLED_MESSAGES = new Set([
     'FLOW_START', 'FLOW_GET', 'FLOW_PAUSE', 'FLOW_RESUME', 'FLOW_STOP', 'FLOW_SET_RATE',
-    'COURSE_PICKED', 'MODULE_ENTERED', 'COURSE_COMPLETED', 'COURSE_DEFERRED', 'FLOW_COMPLETE', 'FLOW_ATTENTION', 'FLOW_RECOVER',
+    'COURSE_PICKED', 'MODULE_ENTERED', 'COURSE_COMPLETED', 'COURSE_DEFERRED', 'FLOW_COMPLETE', 'FLOW_ATTENTION', 'FLOW_RECOVER', 'FLOW_AUTO_RESTART',
   ]);
   const injectionLocks = new Map();
+  const AUTO_RESTART_DELAY_MS = 5000;
+  const MAX_AUTO_RESTARTS_WITHOUT_PROGRESS = 5;
 
   function isAllowedUrl(value) {
     try {
@@ -55,6 +57,10 @@
       deferredKeys: Array.isArray(value.deferredKeys) ? [...new Set(value.deferredKeys.filter((item) => typeof item === 'string').slice(0, 500))] : [],
       deferredPeriodIds: Array.isArray(value.deferredPeriodIds) ? [...new Set(value.deferredPeriodIds.filter((item) => typeof item === 'string').slice(0, 500))] : [],
       pendingKey: typeof value.pendingKey === 'string' ? value.pendingKey : null,
+      autoRestartCount: Number.isSafeInteger(value.autoRestartCount) && value.autoRestartCount >= 0
+        ? value.autoRestartCount : 0,
+      ...(typeof value.attentionReason === 'string' && value.attentionReason
+        ? { attentionReason: value.attentionReason.slice(0, 120) } : {}),
       ...(validRunId(value.runId) ? { runId: value.runId } : {}),
       ...(Number.isSafeInteger(value.practiceCheckAt) && value.practiceCheckAt > 0
         ? { practiceCheckAt: value.practiceCheckAt } : {}),
@@ -66,9 +72,53 @@
     };
   }
 
-  function createBackground(chromeApi) {
+  function createBackground(chromeApi, scheduler = globalThis) {
     if (!chromeApi?.storage?.session || !chromeApi?.runtime?.onMessage) {
       throw new Error('Chrome extension APIs are required.');
+    }
+    const restartTimers = new Map();
+    const restartOperations = new Map();
+
+    function cancelAutoRestart(tabId) {
+      const timer = restartTimers.get(tabId);
+      if (timer !== undefined) scheduler.clearTimeout(timer);
+      restartTimers.delete(tabId);
+    }
+
+    async function autoRestart(tabId, runId) {
+      if (restartOperations.has(tabId)) return restartOperations.get(tabId);
+      const operation = (async () => {
+      const session = await getSession(tabId);
+      if (!session || session.phase !== 'paused' || session.runId !== runId ||
+        !session.attentionReason || session.autoRestartCount >= MAX_AUTO_RESTARTS_WITHOUT_PROGRESS) return false;
+      cancelAutoRestart(tabId);
+      session.autoRestartCount += 1;
+      session.phase = 'running';
+      delete session.attentionReason;
+      session.runId = globalThis.crypto.randomUUID();
+      await putSession(session);
+      await recordSessionEvent(tabId, 'auto-restarted');
+      if (await continueSession(tabId)) return true;
+      session.phase = 'paused';
+      session.attentionReason = '自动恢复时页面暂不可用';
+      await putSession(session);
+      await recordSessionEvent(tabId, 'auto-restart-retry', session.attentionReason);
+      if (session.autoRestartCount < MAX_AUTO_RESTARTS_WITHOUT_PROGRESS) scheduleAutoRestart(tabId, session.runId);
+      return false;
+      })();
+      restartOperations.set(tabId, operation);
+      try { return await operation; }
+      finally { if (restartOperations.get(tabId) === operation) restartOperations.delete(tabId); }
+    }
+
+    function scheduleAutoRestart(tabId, runId) {
+      cancelAutoRestart(tabId);
+      const timer = scheduler.setTimeout(() => {
+        restartTimers.delete(tabId);
+        autoRestart(tabId, runId).catch(() => {});
+      }, AUTO_RESTART_DELAY_MS);
+      timer?.unref?.();
+      restartTimers.set(tabId, timer);
     }
 
     async function readSessions() {
@@ -93,9 +143,10 @@
       return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
     }
 
-    async function recordSessionEvent(tabId, type) {
+    async function recordSessionEvent(tabId, type, reason = '') {
       const events = await readSessionEvents();
-      events[String(tabId)] = { type, at: new Date().toISOString() };
+      events[String(tabId)] = { type, at: new Date().toISOString(),
+        ...(reason ? { reason: String(reason).slice(0, 120) } : {}) };
       await chromeApi.storage.session.set({ [SESSION_EVENT_KEY]: events });
     }
 
@@ -117,6 +168,7 @@
 
     async function clearSession(tabId, reason = 'cleared') {
       if (!Number.isInteger(tabId)) return;
+      cancelAutoRestart(tabId);
       const sessions = await readSessions();
       delete sessions[String(tabId)];
       await writeSessions(sessions);
@@ -195,8 +247,10 @@
             deferredKeys: [],
             deferredPeriodIds: [],
             pendingKey: null,
+            autoRestartCount: 0,
             ...(validRunId(message.runId) ? { runId: message.runId } : {}),
           };
+          cancelAutoRestart(tabId);
           await putSession(session);
           await recordSessionEvent(tabId, 'started');
           return { ok: true, session };
@@ -220,20 +274,25 @@
           return { ok: true, session };
         }
         case 'FLOW_PAUSE': {
+          cancelAutoRestart(tabId);
           const session = await getSession(tabId);
           if (!session) return { ok: true, session: null };
           session.phase = 'paused';
+          delete session.attentionReason;
           await putSession(session);
           await bestEffortMessage(tabId, { type: 'PAUSE' });
           return { ok: true, session };
         }
         case 'FLOW_RESUME': {
+          cancelAutoRestart(tabId);
           const session = await getSession(tabId);
           if (!session) return { ok: true, session: null };
           if (!await allowedTab(tabId)) {
             return { ok: false, session: null };
           }
           session.phase = 'running';
+          session.autoRestartCount = 0;
+          delete session.attentionReason;
           await putSession(session);
           await continueSession(tabId);
           return { ok: true, session };
@@ -266,6 +325,7 @@
           const sameCourse = session.pendingKey === courseKey;
           const priorCheckAt = session.practiceCheckAt;
           session.pendingKey = courseKey;
+          if (!sameCourse) session.autoRestartCount = 0;
           const learned = message.learnedSeconds;
           const required = message.requiredSeconds;
           if (Number.isSafeInteger(learned) && Number.isSafeInteger(required) &&
@@ -342,14 +402,24 @@
         }
         case 'FLOW_ATTENTION': {
           const senderTabId = sender?.tab?.id;
-          if (!Number.isInteger(senderTabId)) return { ok: false };
+          if (!Number.isInteger(senderTabId) || !await allowedContentSender(sender)) return { ok: false };
           const session = await getSession(senderTabId);
           if (!session) return { ok: true, session: null };
           if (!sameRun(session, message)) return { ok: false };
+          if (session.phase !== 'running') return { ok: false, session };
+          const reason = String(message.reason || '').slice(0, 120);
           session.phase = 'paused';
+          session.attentionReason = reason;
           await putSession(session);
-          await recordSessionEvent(senderTabId, 'attention-paused');
+          await recordSessionEvent(senderTabId, 'attention-paused', reason);
+          if (session.autoRestartCount < MAX_AUTO_RESTARTS_WITHOUT_PROGRESS) {
+            scheduleAutoRestart(senderTabId, session.runId);
+          }
           return { ok: true, session };
+        }
+        case 'FLOW_AUTO_RESTART': {
+          if (!await allowedContentSender(sender)) return { ok: false };
+          return { ok: await autoRestart(sender.tab.id, message.runId) };
         }
         default:
           return undefined;

@@ -10,6 +10,9 @@
   const RETURN_HOME_TEXT = '返回课程主页';
   const PLATFORM_FINISHED_PATTERN = /视频已经播放完毕\s*[，,]\s*请选择其他视频[!！]?/;
   const DIALOG_CONFIRM_TEXTS = new Set(['确定', '知道了', '知道了!', '知道了！', '确认', '好', '好的', '关闭', 'OK']);
+  // SPA navigation can finish well after the clicked control has appeared.
+  const ROUTE_CHANGE_TICKS = 120; // 500 ms per tick, at most one minute.
+  const ACTION_CHANGE_WAIT_MS = 60000;
 
   function isAllowedUrl(value) {
     try {
@@ -679,6 +682,7 @@
     }
 
     _setAttention(reason) {
+      if (this.state === 'needsAttention') return this.status();
       this.state = 'needsAttention';
       this.reason = reason;
       this._clearCatalogRetry();
@@ -696,6 +700,13 @@
       if (this.autoFlow && !this.attentionSent) {
         this.attentionSent = true;
         this._sendBackground('FLOW_ATTENTION', { reason }).catch(() => {});
+        // The page timer backs up the background timer if the service worker goes idle.
+        const schedule = this.window?.setTimeout || globalThis.setTimeout;
+        schedule.call(this.window, () => {
+          if (this.autoFlow && this.state === 'needsAttention') {
+            this._sendBackground('FLOW_AUTO_RESTART').catch(() => {});
+          }
+        }, 5000);
       }
       this._stopProgressMonitor();
       this._cancelTransitionWait();
@@ -1056,15 +1067,15 @@
         const modal = this._hasPracticeBankModal();
         const candidates = this._practiceBankCandidates();
         if (this.practiceBankPendingName && !Quiz.isPracticeUrl(this.window?.location?.href)) {
-          if (Date.now() - this.practiceBankPendingSince > 12000) return this._setAttention('点击题库后页面没有进入练习，已停止避免重复点击。');
+          if (Date.now() - this.practiceBankPendingSince > ACTION_CHANGE_WAIT_MS) return this._setAttention('点击题库后页面没有进入练习，已停止避免重复点击。');
           return this._schedulePractice(1000);
         }
         if (this.practiceClosingModalSince && modal) {
-          if (Date.now() - this.practiceClosingModalSince > 12000) return this._setAttention('关闭题库弹窗后页面没有变化。');
+          if (Date.now() - this.practiceClosingModalSince > ACTION_CHANGE_WAIT_MS) return this._setAttention('关闭题库弹窗后页面没有变化。');
           return this._schedulePractice(1000);
         }
         if (this.practiceReturningBankSince && Quiz.isBankUrl(this.window?.location?.href)) {
-          if (Date.now() - this.practiceReturningBankSince > 12000) return this._setAttention('从题库卡片返回后页面没有变化。');
+          if (Date.now() - this.practiceReturningBankSince > ACTION_CHANGE_WAIT_MS) return this._setAttention('从题库卡片返回后页面没有变化。');
           return this._schedulePractice(1000);
         }
         if (modal && candidates.length) {
@@ -1550,7 +1561,9 @@
           if (!ack?.ok) {
             const detail = {
               'session-missing': '后台学习会话已丢失，请重新点击“开始学习”。',
-              'session-paused': '后台学习会话已暂停，请点击“继续”。',
+              'session-paused': ack?.session?.attentionReason
+                ? `后台学习会话已暂停：${ack.session.attentionReason} 请点击“继续”。`
+                : '后台学习会话已暂停，请点击“继续”。',
               'tab-not-allowed': '后台识别到页面已离开学习站点，已停止自动操作。',
               'invalid-request': '课程标识未通过后台校验，已停止自动操作。',
               'tab-unavailable': '后台暂时无法确认当前标签页，重试后仍失败。',
@@ -1625,7 +1638,7 @@
           return;
         }
         this.catalogWait.attempts += 1;
-        if (this.catalogWait.attempts >= 20) {
+        if (this.catalogWait.attempts >= ROUTE_CHANGE_TICKS) {
           this._setAttention('目录翻页后内容未变化，已停止避免重复翻页。');
           return;
         }
@@ -1649,7 +1662,7 @@
           return;
         }
         this.catalogWait.attempts += 1;
-        if (this.catalogWait.attempts >= 20) {
+        if (this.catalogWait.attempts >= ROUTE_CHANGE_TICKS) {
           this._setAttention('打开课程后页面没有切换，已停止避免重复点击。');
           return;
         }
@@ -1701,7 +1714,7 @@
             }
           }, 500);
         }
-      }, 10000);
+      }, ACTION_CHANGE_WAIT_MS);
     }
 
     _clearReturnWait() {
