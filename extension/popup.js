@@ -4,7 +4,7 @@
   const ALLOWED_HOST = 'labsafe.lzjtu.edu.cn';
   const ALLOWED_PATH = '/lab-study-front/';
   const RATE_KEY = 'studyRate';
-  const buttonIds = ['start', 'pause', 'resume', 'stop', 'export', 'exportQuiz', 'clearPracticeProgress'];
+  const buttonIds = ['start', 'pause', 'resume', 'stop', 'export', 'exportQuiz', 'fillExam', 'clearPracticeProgress'];
   const rateInput = document.getElementById('rate');
   const statusOutput = document.getElementById('status');
   const errorOutput = document.getElementById('error');
@@ -127,7 +127,7 @@
 
   async function inject(tabId) {
     try {
-      await chrome.scripting.executeScript({ target: { tabId }, files: ['quiz.js', 'content.js'] });
+      await chrome.scripting.executeScript({ target: { tabId }, files: ['quiz.js', 'exam.js', 'content.js'] });
     } catch {
       throw new Error('无法在当前页面启动学习助手，请确认这是允许的学习页面后重试。');
     }
@@ -332,6 +332,17 @@
   }));
   document.getElementById('export').addEventListener('click', exportDiagnosis);
   document.getElementById('exportQuiz').addEventListener('click', exportQuiz);
+  document.getElementById('fillExam').addEventListener('click', () => runWithTab({ ensureInjected: true }, async (tab) => {
+    const flow = await sendFlow('FLOW_GET', { tabId: tab.id });
+    if (flow.session?.phase === 'running' || flow.session?.phase === 'switching') {
+      throw new Error('请先暂停自动学习，再手动进入考试答题页面。');
+    }
+    const response = await sendToTab(tab.id, 'EXAM_FILL');
+    const result = response.result;
+    statusOutput.textContent = `已处理 ${result.pages} 页、${result.visible} 题；匹配 ${result.matched}，已填 ${result.filled}，跳过 ${result.skipped}。${result.stoppedReason}`;
+    feedback.dataset.state = 'idle';
+    return null;
+  }));
   document.getElementById('clearPracticeProgress').addEventListener('click', () => runWithTab({}, async (tab) => {
     await sendFlow('FLOW_STOP', { tabId: tab.id });
     await chrome.storage.local.set({ labsafePracticeBanksV1: [],

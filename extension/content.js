@@ -2280,6 +2280,18 @@
         try { parsedCount = Quiz.questionContainers(this.document, this.window).length; } catch { /* 仅报告结构计数 */ }
         practice = { groupCount, wrapperCount, parsedCount };
       }
+      let exam = null;
+      if (this.document.querySelector?.('.answer-sheet')) {
+        const parser = globalThis.LabSafeExam;
+        let parsedCount = null;
+        try { parsedCount = parser?.visibleQuestions(this.document, this.window)?.length ?? null; } catch { /* 仅报告结构计数 */ }
+        exam = {
+          itemCount: this.document.querySelectorAll?.('.answer-sheet .m-item')?.length ?? 0,
+          optionCount: this.document.querySelectorAll?.('.answer-sheet .select-box label')?.length ?? 0,
+          parsedCount,
+          nextPageCandidate: Boolean(parser?.nextPageControl(this.document, this.window)),
+        };
+      }
       let catalog = null;
       if (isCatalogUrl(this.window?.location?.href)) {
         const headers = Array.from(this.document.querySelectorAll?.(HEADER_WRAPPER_SELECTOR) || []);
@@ -2317,6 +2329,7 @@
             this.autoContext.moduleParentPeriodId !== this._currentPeriodId()),
         } } : {}),
         ...(practice ? { practice } : {}),
+        ...(exam ? { exam } : {}),
         ...(catalog ? { catalog } : {}),
         videoCount: videos.length,
         visibleVideoCount: videos.filter((video) => isVisible(video, this.window)).length,
@@ -2383,6 +2396,26 @@
           case 'DIAGNOSE':
             response = { ok: true, diagnosis: controller.diagnose() };
             break;
+          case 'EXAM_FILL': {
+            const exam = globalThis.LabSafeExam || (typeof module === 'object' && module?.exports ? require('./exam.js') : null);
+            const href = pageWindow.location?.href || '';
+            if (!isAllowedUrl(href) || Quiz?.isPracticeUrl(href) || Quiz?.isBankUrl(href) ||
+              isCatalogUrl(href) || isPersonUrl(href) || controller.autoFlow && controller.state === 'running') {
+              sendResponse({ ok: false, status: { reason: '请先暂停自动学习，并手动进入考试答题页面。' } });
+              return false;
+            }
+            const pageText = String(document.body?.innerText || '').slice(0, 1200);
+            const examItem = document.querySelector?.('.answer-sheet .m-item');
+            if ((!examItem && !/(?:模拟考试|正式考试|常规考试|在线考试|试卷|答题卡|考试时间)/.test(pageText)) || !exam) {
+              sendResponse({ ok: false, status: { reason: '未确认这是考试答题页面，请保持页面并导出诊断。' } });
+              return false;
+            }
+            chrome.storage.local.get(Quiz.STORAGE_KEY)
+              .then((saved) => exam.fillForward(document, pageWindow, saved[Quiz.STORAGE_KEY] || {}))
+              .then((result) => sendResponse({ ok: true, result }))
+              .catch((error) => sendResponse({ ok: false, status: { reason: error?.message || '考试题目处理失败。' } }));
+            return true;
+          }
           default:
             return false;
         }

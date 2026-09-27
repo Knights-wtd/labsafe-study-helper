@@ -6,7 +6,7 @@ const vm = require('node:vm');
 
 test('popup preserves the concrete page failure instead of hiding it as stopped', async () => {
   const elements = new Map();
-  for (const id of ['rate', 'status', 'error', 'start', 'pause', 'resume', 'stop', 'export', 'exportQuiz', 'clearPracticeProgress', 'practiceProgress']) {
+  for (const id of ['rate', 'status', 'error', 'start', 'pause', 'resume', 'stop', 'export', 'exportQuiz', 'fillExam', 'clearPracticeProgress', 'practiceProgress']) {
     elements.set(id, { value: id === 'rate' ? '1' : '', textContent: '', hidden: true, disabled: false,
       listeners: {}, addEventListener(type, handler) { this.listeners[type] = handler; }, focus() {} });
   }
@@ -41,7 +41,7 @@ test('popup preserves the concrete page failure instead of hiding it as stopped'
 
 test('starting again preserves bank progress while the clear button resets only traversal', async () => {
   const elements = new Map();
-  for (const id of ['rate', 'status', 'error', 'start', 'pause', 'resume', 'stop', 'export', 'exportQuiz', 'clearPracticeProgress', 'practiceProgress']) {
+  for (const id of ['rate', 'status', 'error', 'start', 'pause', 'resume', 'stop', 'export', 'exportQuiz', 'fillExam', 'clearPracticeProgress', 'practiceProgress']) {
     elements.set(id, { value: id === 'rate' ? '1' : '', textContent: '', hidden: true, disabled: false,
       listeners: {}, addEventListener(type, handler) { this.listeners[type] = handler; }, focus() {} });
   }
@@ -83,4 +83,31 @@ test('starting again preserves bank progress while the clear button resets only 
   assert.equal(storage.labsafeActivePracticeBankV1, '');
   assert.deepEqual(storage.labsafePracticeQuestionsV1.sample.correct, ['A', 'C']);
   assert.equal(elements.get('practiceProgress').textContent, '本轮题库：尚未开始');
+});
+
+test('exam button is manual and sends only the fill command', async () => {
+  const elements = new Map();
+  for (const id of ['rate', 'status', 'error', 'start', 'pause', 'resume', 'stop', 'export', 'exportQuiz', 'fillExam', 'clearPracticeProgress', 'practiceProgress']) {
+    elements.set(id, { value: id === 'rate' ? '1' : '', textContent: '', hidden: true, disabled: false,
+      listeners: {}, addEventListener(type, handler) { this.listeners[type] = handler; }, focus() {} });
+  }
+  const actions = [];
+  const chrome = {
+    tabs: { query: async () => [{ id: 7, url: 'https://labsafe.lzjtu.edu.cn/lab-study-front/assessment/7' }],
+      sendMessage: async (_tabId, message) => { actions.push(message.type);
+        return message.type === 'EXAM_FILL' ? { ok: true, result: { pages: 1, visible: 3, matched: 2, filled: 2, skipped: 1, stoppedReason: '末页' } } :
+          { ok: true, status: { state: 'idle' } }; } },
+    runtime: { sendMessage: async (message) => { actions.push(message.type); return { ok: true, session: null }; } },
+    scripting: { executeScript: async ({ files }) => { actions.push(files.join(',')); } },
+    storage: { local: { get: async () => ({ studyRate: 1 }), set: async () => {} } },
+  };
+  const context = { chrome, document: { getElementById: (id) => elements.get(id),
+    querySelector: () => ({ dataset: {} }) }, location: { search: '' }, URL, URLSearchParams, Blob, Date, setTimeout };
+  context.globalThis = context;
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../extension/popup.js'), 'utf8'), context);
+  await new Promise((resolve) => setImmediate(resolve));
+  actions.length = 0;
+  await elements.get('fillExam').listeners.click();
+  assert.deepEqual(actions, ['quiz.js,exam.js,content.js', 'FLOW_GET', 'EXAM_FILL']);
+  assert.match(elements.get('status').textContent, /匹配 2，已填 2/);
 });
